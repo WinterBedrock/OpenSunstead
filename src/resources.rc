@@ -1,0 +1,35 @@
+#include "resource.h"
+
+// Embed the toggle sound assets directly into the DLL as RCDATA so they are
+// always available and can be deployed to the client folder on first inject.
+IDR_SOUND_ON         RCDATA "..\\assets\\sound\\on.wav"
+IDR_SOUND_OFF        RCDATA "..\\assets\\sound\\off.wav"
+IDR_SOUND_MODERN_ON  RCDATA "..\\assets\\sound\\modern_on.wav"
+IDR_SOUND_MODERN_OFF RCDATA "..\\assets\\sound\\modern_off.wav"
+IDR_SOUND_SMOOTH_ON  RCDATA "..\\assets\\sound\\smooth_on.wav"
+IDR_SOUND_SMOOTH_OFF RCDATA "..\\assets\\sound\\smooth_off.wav"
+
+// Kick sounds (KickSounds module) + inject/uninject feedback.
+IDR_SOUND_FARD       RCDATA "../assets/sound/fard.wav"
+IDR_SOUND_MARIO      RCDATA "../assets/sound/mariodeath.wav"
+IDR_SOUND_WINERROR   RCDATA "../assets/sound/windows_background.wav"
+IDR_SOUND_INJECT     RCDATA "../assets/sound/inject.mp3"
+IDR_SOUND_UNINJECT   RCDATA "../assets/sound/eject.wav"
+IDR_SOUND_67         RCDATA "../assets/sound/67.mp3"
+
+// Fonts (deployed to assets/ by AssetDeployer on first inject)
+IDR_FONT_ICONS            RCDATA "..\\assets\\font\\Icons.ttf"
+IDR_FONT_PRODUCTSANS      RCDATA "..\\assets\\font\\Product-Sans-Bold.ttf"
+IDR_FONT_MOJANGLES        RCDATA "..\\assets\\font\\Mojangles.ttf"
+IDR_FONT_COMFORTAA        RCDATA "..\\assets\\font\\Comfortaa.ttf"
+IDR_FONT_PRODUCTSANS_REG  RCDATA "..\\assets\\font\\Product-Sans.ttf"
+IDR_FONT_PRODUCTSANS_BOLD RCDATA "..\\assets\\font\\Product-Sans-Bold.ttf"
+IDR_FONT_MOJANGLES_BOLD   RCDATA "..\\assets\\font\\Mojangles-Bold.ttf"
+IDR_FONT_COMFORTAA_BOLD   RCDATA "..\\assets\\font\\Comfortaa-Bold.ttf"
+IDR_FONT_MANROPE_BOLD     RCDATA "..\\assets\\font\\Manrope-Bold.ttf"
+IDR_FONT_BANGERS          RCDATA "..\\assets\\font\\Bangers-Regular.ttf"
+IDR_FONT_GEIST_LIGHT      RCDATA "..\\assets\\font\\Geist-Light.ttf"
+IDR_FONT_GEIST_BOLD       RCDATA "..\\assets\\font\\Geist-Bold.ttf"
+IDR_FONT_MANROPE_REG      RCDATA "..\\assets\\font\\Manrope-Regular.ttf"
+
+
