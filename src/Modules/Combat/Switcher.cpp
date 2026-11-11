@@ -111,9 +111,6 @@ void Switcher::OnUpdate() {
     if (lmb && mActive) mLastAttackMs = now;   // holding the button keeps it out
     mLmbDown = lmb;
 
-    // Button released and no hit for Restore Delay ms -> give the slot back.
-    // While the user scrolls manually mid-fight we stay out of the way: the
-    // restore only fires when the held slot is still the weapon we equipped.
     if (mActive && !lmb && now - mLastAttackMs >= (unsigned long long)GetHoldMs()) {
         SDK::GameContext ctx;
         if (SDK::resolveContext(ctx, false) && ctx.lp) RestoreNow(ctx.lp);

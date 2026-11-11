@@ -50,10 +50,6 @@ struct Site {
     bool      patched;
 };
 
-// Guard-call offset from the pattern match:
-//   DeviceOS  modern: `BA FF FF FF FF` prefix (5) ... +0x24
-//   InputMode modern: `31 D2` prefix (2) — 3 bytes shorter ... +0x21
-//   both legacy: pattern starts at `48 8B 4? 10` ... +0x0E
 static Site g_osSite{ 0, 0x24, {}, false };
 static Site g_inSite{ 0, 0x21, {}, false };
 static Site g_osLegacy{ 0, 0x0E, {}, false };
@@ -65,11 +61,6 @@ static bool PatchSite(Site& s, int32_t value) {
     if (!s.sig) return false;
     uintptr_t call = s.sig + s.guardOff;
 
-    // Sanity on FIRST patch only: the site must hold `FF 15 disp32` (guard
-    // dispatch). If a future update shifts the layout, bail out instead of
-    // corrupting whatever landed there. Once patched the bytes are OUR
-    // `B8 imm32 90` — rewriting just the imm32 (setting changed) is fine and
-    // must NOT fail this check.
     if (!s.patched) {
         __try {
             uint8_t* b = reinterpret_cast<uint8_t*>(call);
@@ -134,9 +125,6 @@ void EditionFaker::OnTick() {
     int curOs    = static_cast<EnumSetting*>(mSettings[0])->mValue;
     int curInput = static_cast<EnumSetting*>(mSettings[1])->mValue;
     if (curOs != lastOsVal || curInput != lastInputVal) {
-        // DeviceOS / DefaultInputMode are only sent inside the ConnectionRequest
-        // at LOGIN time — changing them while connected has no effect on the
-        // current session, tell the player instead of leaving them guessing.
         if (editionFakerInWorld())
             Notifications::AddNotification("EditionFaker: rejoin the server to apply the new device OS");
         ApplySpoof();

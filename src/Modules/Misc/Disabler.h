@@ -5,43 +5,6 @@
 
 namespace SDK { class Packet; }
 
-// Disabler — outgoing movement spoofing aimed at modern Bedrock prediction
-// checks (The Hive's Flareon stack and the BDS-prediction family).
-//
-// The PlayerAuthInput branch runs from GameHooks::hkPacketSend BEFORE every
-// other packet module. The game rebuilds every spoofed field each tick, so
-// toggling off returns to vanilla instantly.
-//
-// Modes:
-//   Drift        — small oscillating Y and a backward move vector on a short
-//                  cycle, with the jump edge pulsed. A replay that integrates
-//                  our own stream can never settle on one path.
-//   Phase        — gentler four-tick version of Drift; MovePlayer also drops
-//                  its runtime id on a stride.
-//   Tick Freeze  — the client tick is held at 0 and MovePlayer's runtime id is
-//                  zeroed, so every time-delta check loses its timeline.
-//   Edge Clash   — START_SNEAKING is asserted on every packet and STOP_SNEAKING
-//                  is added whenever SNEAKING is absent. Prediction rejects a
-//                  start that has no matching state.
-//   Glide        — gliding, jumping and sprinting are all forced on and their
-//                  stop/sneak counterparts stripped, so the predictor switches
-//                  to elytra handling and stops applying ground friction.
-//   Null Motion  — position and every move vector are zeroed. No speed track
-//                  can be built from the stream.
-//   Hive Motion  — the reported move vector is rotated into the same frame as
-//                  the reported yaw, and the four direction bits are rebuilt
-//                  from that vector. Hive's movement check compares the
-//                  direction bits against the yaw; a mismatch (silent aim while
-//                  walking) is exactly what it flags.
-//   Ground Lock  — the vertical delta is the vanilla grounded value and the
-//                  jump family is stripped, so fall-distance checks see a
-//                  player who never left the ground.
-//   Tick Slip    — the client tick is walked a few steps behind the real one.
-//                  Reach and timer checks that subtract "now - clientTick"
-//                  come out inside the allowed window.
-//   Latency Hold — outgoing NetworkStackLatency replies are held and released
-//                  in a batch. The Hive combat timer is built from those
-//                  timestamps; batching them collapses the window it measures.
 class Disabler : public Module {
 public:
     Disabler() : Module("Disabler", "Disrupts server-side movement prediction", Category::Misc, 0) {

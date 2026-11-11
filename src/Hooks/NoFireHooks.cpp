@@ -1,6 +1,3 @@
-// NoFire detours: the four fire-particle draw paths, the molang
-// query.is_on_fire gate and the Actor::isOnFire vtable slot — each is one of
-// the independent paths the first-person burning overlay renders through.
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
@@ -8,7 +5,7 @@
 #include "../Modules/ModuleManager.h"
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <cstdio>
 #include <string>
 
@@ -145,10 +142,9 @@ namespace {
             void* fn = vt[0x178 / 8];
             if (!fn || !gh::isExecutablePtr(fn)) return false;
             if (fn == s_actorIsOnFireTarget) return true;   // already installed
-            if (MH_CreateHook(fn, &hkActorIsOnFire,
-                              reinterpret_cast<LPVOID*>(&oActorIsOnFire)) != MH_OK)
+            if (!HookEngine::Create(fn, &hkActorIsOnFire,
+                              reinterpret_cast<LPVOID*>(&oActorIsOnFire)))
                 return false;
-            if (gh::HookEnable(fn) != MH_OK) return false;
             s_actorIsOnFireTarget = fn;
             return true;
         } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -170,9 +166,8 @@ void InstallNoFireHooks() {
     {
         uintptr_t flameAddr = SigManager::GetInstance().FlameRenderer_draw;
         if (flameAddr) {
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(flameAddr), &hkFlameRendererDraw,
-                    reinterpret_cast<LPVOID*>(&oFlameRendererDraw)) == MH_OK) {
-                gh::HookEnable(reinterpret_cast<LPVOID>(flameAddr));
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(flameAddr), &hkFlameRendererDraw,
+                    reinterpret_cast<LPVOID*>(&oFlameRendererDraw))) {
                 LOG_INFO("FlameRenderer::draw hooked (NoFire)", "GameHooks");
             } else {
                 LOG_ERROR("FAILED to hook FlameRenderer::draw", "GameHooks");
@@ -185,9 +180,8 @@ void InstallNoFireHooks() {
     {
         uintptr_t onFireAddr = SigManager::GetInstance().OnFireClientSystem_update;
         if (onFireAddr) {
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(onFireAddr), &hkOnFireClientSystemUpdate,
-                    reinterpret_cast<LPVOID*>(&oOnFireClientSystemUpdate)) == MH_OK) {
-                gh::HookEnable(reinterpret_cast<LPVOID>(onFireAddr));
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(onFireAddr), &hkOnFireClientSystemUpdate,
+                    reinterpret_cast<LPVOID*>(&oOnFireClientSystemUpdate))) {
                 LOG_INFO("OnFireClientSystem::update hooked (NoFire self overlay)", "GameHooks");
             } else {
                 LOG_ERROR("FAILED to hook OnFireClientSystem::update", "GameHooks");
@@ -200,9 +194,8 @@ void InstallNoFireHooks() {
     {
         uintptr_t fireEvtAddr = SigManager::GetInstance().ClientFireActorEvent_handleFire;
         if (fireEvtAddr) {
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(fireEvtAddr), &hkClientFireActorEvent,
-                    reinterpret_cast<LPVOID*>(&oClientFireActorEvent)) == MH_OK) {
-                gh::HookEnable(reinterpret_cast<LPVOID>(fireEvtAddr));
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(fireEvtAddr), &hkClientFireActorEvent,
+                    reinterpret_cast<LPVOID*>(&oClientFireActorEvent))) {
                 LOG_INFO("ClientFireActorEventSystem::handleFire hooked (NoFire FP overlay)", "GameHooks");
             } else {
                 LOG_ERROR("FAILED to hook ClientFireActorEventSystem::handleFire", "GameHooks");
@@ -215,9 +208,8 @@ void InstallNoFireHooks() {
     {
         uintptr_t molangAddr = SigManager::GetInstance().MolangQuery_isOnFire;
         if (molangAddr) {
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(molangAddr), &hkMolangIsOnFire,
-                    reinterpret_cast<LPVOID*>(&oMolangIsOnFire)) == MH_OK) {
-                gh::HookEnable(reinterpret_cast<LPVOID>(molangAddr));
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(molangAddr), &hkMolangIsOnFire,
+                    reinterpret_cast<LPVOID*>(&oMolangIsOnFire))) {
                 LOG_INFO("Molang query.is_on_fire hooked (NoFire FP overlay)", "GameHooks");
             } else {
                 LOG_ERROR("FAILED to hook Molang query.is_on_fire", "GameHooks");
@@ -230,9 +222,8 @@ void InstallNoFireHooks() {
     {
         uintptr_t bbAddr = SigManager::GetInstance().FlameBillboard_draw;
         if (bbAddr) {
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(bbAddr), &hkFlameBillboardDraw,
-                    reinterpret_cast<LPVOID*>(&oFlameBillboardDraw)) == MH_OK) {
-                gh::HookEnable(reinterpret_cast<LPVOID>(bbAddr));
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(bbAddr), &hkFlameBillboardDraw,
+                    reinterpret_cast<LPVOID*>(&oFlameBillboardDraw))) {
                 LOG_INFO("FlameBillboard::draw hooked (NoFire FP overlay)", "GameHooks");
             } else {
                 LOG_ERROR("FAILED to hook FlameBillboard::draw", "GameHooks");

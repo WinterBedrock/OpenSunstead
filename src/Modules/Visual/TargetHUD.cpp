@@ -34,23 +34,24 @@ namespace {
 // sehGetActorList / sehIsPlayer / sehGetPos are consolidated in
 // SDK::GameContext and resolved via ADL on SDK::Actor.
 
-// Player::getSkin() lives at Player+0xAB0 -> ref -> wrapper -> SkinImage @wrapper+0xA0
+// Player::getSkin() 1.26.62 (Latite-dumped): Player+0xAD8 -> SerializedSkinRef
+// -> skinImpl=*ref -> SkinImage @ skinImpl+0x80
 SDK::mce::Image* sehImageFromActor(SDK::Actor* actor) {
     if (!actor) return nullptr;
     __try {
-        if (!sdk_safe_ptr(actor, 0xAB0 + sizeof(void*))) return nullptr;
-        uintptr_t ref = *reinterpret_cast<uintptr_t*>((uintptr_t)actor + 0xAB0);
+        constexpr uintptr_t kSkinRef = ::Layout::Actor::SerializedSkinRef;  // 0xAD8
+        if (!sdk_safe_ptr(actor, kSkinRef + sizeof(void*))) return nullptr;
+        uintptr_t ref = *reinterpret_cast<uintptr_t*>((uintptr_t)actor + kSkinRef);
         if (!ref || !sdk_safe_ptr((void*)ref, sizeof(void*))) return nullptr;
-        uintptr_t wrapper = *reinterpret_cast<uintptr_t*>(ref);
-        if (!wrapper || !sdk_safe_ptr((void*)wrapper, 0xA0 + sizeof(void*))) return nullptr;
-        return reinterpret_cast<SDK::mce::Image*>(wrapper + 0xA0);
+        uintptr_t skinImpl = *reinterpret_cast<uintptr_t*>(ref);
+        if (!skinImpl) return nullptr;
+        constexpr uintptr_t kSkinImage = ::Layout::Actor::SkinImageInRef;   // 0x80
+        if (!sdk_safe_ptr((void*)skinImpl, kSkinImage + sizeof(SDK::mce::Image))) return nullptr;
+        return reinterpret_cast<SDK::mce::Image*>(skinImpl + kSkinImage);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
-// Head decode: the image pointer is resolved under SEH; the decode itself runs
-// outside the __try because extractHeadRGBA returns a std::vector by value
-// (C2712 forbids C++ object unwinding inside a __try frame).
 std::vector<unsigned char> sehHeadRGBA(SDK::Actor* actor, int outSize) {
     SDK::mce::Image* img = sehImageFromActor(actor);
     if (!img) return {};
@@ -60,10 +61,6 @@ std::vector<unsigned char> sehHeadRGBA(SDK::Actor* actor, int outSize) {
 // getHealth() validates all pointers internally; the optional<float> it returns
 // must live outside a __try frame, so no SEH wrapper is needed here.
 
-// Project an actor's AABB to a screen-space rect (tl/br). Returns false when
-// the player is entirely behind the camera or the projection is degenerate —
-// the caller then falls back to the HUD-editor position. Box recipe stays
-// local (sehGetActorBox); the projection loop is the shared BoxOverlay one.
 bool projectActorScreenRect(SDK::Actor* actor, const float* mvp, const Vec3& origin,
                             const ImVec2& screen, ImVec2* tl, ImVec2* br) {
     Vec3 mn, mx;
@@ -74,10 +71,6 @@ bool projectActorScreenRect(SDK::Actor* actor, const float* mvp, const Vec3& ori
     return true;
 }
 
-// SEH POD helper: reads Actor::invulnerableTime (the Mob::hurtEffects timer,
-// Actor+0x19C per Latite's SDK — their JS getHurtTime returns this field).
-// It advances whenever the actor actually takes damage, which is how the
-// head hit-animation detects real landed hits instead of raw clicks.
 static bool sehReadHurtTime(SDK::Actor* actor, int* out) {
     __try {
         if (!actor || !sdk_safe_ptr(actor, 0x1A0)) return false;
@@ -123,21 +116,12 @@ void TargetHUD::OnRender() {
     EnumSetting*   posTypeS = static_cast<EnumSetting*>(mSettings[16]);
     BoolSetting*   onlyAuraS= static_cast<BoolSetting*>(mSettings[17]);
 
-    // Accent color: theme by default, or the user's Accent Color setting when
-    // "Custom Accent" is on. Used for the border pulse, glow and (optionally)
-    // the health bar.
     auto accentColor = [&](float hueShift) -> ImColor {
         if (customAcS->mValue)
             return ImColor(accentS->mValue[0], accentS->mValue[1], accentS->mValue[2], accentS->mValue[3]);
         return ColorUtils::getThemedColor(hueShift);
     };
 
-    // Rise-style HUD behaviour: on the chat/pause surfaces (INCLUDING our own
-    // custom chat menu — it keeps the hud_screen but opens a UI surface) a
-    // TargetHUD with no target nearby shows OUR OWN player instead, easing in
-    // with the normal appear animation; when the surface closes it lingers ~1s
-    // and then eases away. The HUD editor mode is gone — this replaces its
-    // placeholder.
     const std::string& screenName = SDK::ScreenView::currentScreenName();
     const bool menuScreen = (screenName == "chat_screen" || screenName == "pause_screen" ||
                              (screenName == "hud_screen" && ::Chat::IsOpen()));
@@ -150,9 +134,6 @@ void TargetHUD::OnRender() {
     }
     const bool selfShow = menuHold > 0.0f;
 
-    // ---- Resolve the target ---------------------------------------------
-    // Only On Aura (default): require Aura enabled and pick the same way Aura
-    // does (nearest player inside Aura's range). Off: original nearest-in-Range.
     std::string targetName;
     float targetHealth = -1.0f;
     float targetDist   = 0.0f;
@@ -204,9 +185,6 @@ void TargetHUD::OnRender() {
         }
     }
 
-    // No real target in the menu (or its 1s linger): show OUR OWN player, the
-    // Rise HUD-editor behaviour. The fade then eases in/out with the panel's
-    // normal zoom animation instead of popping.
     if (!haveTarget && selfShow && lp) {
         haveTarget   = true;
         targetActor  = lp;
@@ -215,18 +193,12 @@ void TargetHUD::OnRender() {
         targetDist   = 0.0f;
     }
 
-    // Only bail entirely once the panel is fully faded out. The panel drives
-    // its fade toward 0 while easing away, so the target loss is always
-    // animated; below the threshold there is nothing left to draw.
     if (!haveTarget && mFade < 0.01f) {
         mFade = 0.0f;
         if (mHeadTex) { SkinUtils::retireTexture(mHeadTex); mHeadTex = nullptr; mHeadName.clear(); }
         return;
     }
 
-    // ---- Linger: hold the panel for a second after the target is lost -----
-    // The fade-out animation only starts once the linger expires, so the
-    // panel visibly hangs on the last target instead of snapping away.
     if (haveTarget) mLingerMs = GetTickCount64();
     const bool linger = !haveTarget && mLingerMs != 0 &&
                         (GetTickCount64() - mLingerMs) < 1000ull;
@@ -255,14 +227,6 @@ void TargetHUD::OnRender() {
         }
     }
 
-    // ---- Hit feedback: driven by the TARGET's hurt EFFECT, not our clicks.
-    // Actor+0x19C (invulnerableTime / Mob::hurtEffects — Latite's getHurtTime)
-    // holds the remaining invulnerability while the hurt state runs. CRITICAL:
-    // that timer DECREMENTS every tick (10, 9, 8, ...) — firing on "value
-    // changed" re-pulsed the animation for the WHOLE decay (the "100 hit
-    // animations per hurt"). The only real event is the transition from NOT
-    // hurting to hurting; invulnerability gates damage, so every new hit
-    // passes through 0 first and re-arms the edge. One pulse per one hit.
     if (haveTarget && targetActor) {
         if (mSeenTarget != (void*)targetActor) {
             mSeenTarget = (void*)targetActor;
@@ -278,11 +242,6 @@ void TargetHUD::OnRender() {
                 mHitPulse = 1.0f;
                 mHurtSinceMs = now;
             }
-            // Stale-offset guard: on a build where +0x19C does not decay to 0
-            // (wrong field, or a server that keeps invulnerability pinned), the
-            // rising edge would fire once and then never again. If the run has
-            // been "hurting" for over 1.5 s, re-arm the edge so held combos
-            // still pulse at a sane rate instead of freezing after one hit.
             if (hurting && mWasHurting && mHurtSinceMs != 0 &&
                 now - mHurtSinceMs > 1500ull && now - mStallPulseMs > 1500ull) {
                 if (hitAnimS->mValue) mHitPulse = 1.0f;
@@ -299,9 +258,6 @@ void TargetHUD::OnRender() {
 
     if (haveTarget) {
         if (targetHealth < 0.0f) targetHealth = 20.0f;
-        // The readouts ease (never snap) toward the live values. During a
-        // target-switch transition they lerp faster so the new target's HP /
-        // distance settle inside the ~250 ms slide instead of trailing it.
         const float lerp = (mSwitchAge < 0.25f) ? 0.35f : 0.25f;
         mDispHealth += (targetHealth - mDispHealth) * lerp;
         mDispDist   += (targetDist   - mDispDist)   * lerp;
@@ -309,12 +265,6 @@ void TargetHUD::OnRender() {
 
     if (targetName.empty()) targetName = "Player";
 
-    // ---- Target-switch detection (animated swap) --------------------------
-    // An identity change restarts the transition clock: the incoming name
-    // slides in + fades in over ~250 ms (see the name draw at the bottom),
-    // and the health/dist readouts keep easing from the previous target's
-    // values instead of snapping, so the whole card morphs to the new target.
-    // First ever frame (mShownName empty) snaps — nothing to animate from.
     {
         float sdt = ImGui::GetIO().DeltaTime;
         if (sdt > 0.0f && sdt < 0.1f) mSwitchAge += sdt;
@@ -336,9 +286,6 @@ void TargetHUD::OnRender() {
     bool showDst = showDstS->mValue;
 
     bool  reserveHead = static_cast<BoolSetting*>(mSettings[8])->mValue;
-    // Bigger head that hugs the LEFT EDGE of the panel — only a thin sliver of
-    // padding separates it from the border (the old 32px head floating a full
-    // pad inside read as lost in the middle).
     float headSize    = reserveHead ? 42.0f * scale : 0.0f;
     float headInset   = reserveHead ? pad * 0.30f : 0.0f;
     float headGap     = reserveHead ? pad * 0.8f : 0.0f;
@@ -357,10 +304,6 @@ void TargetHUD::OnRender() {
     mWidth  = width;   // base hitbox for the HUD editor (unaffected by anim)
     mHeight = height;
 
-    // ---- Panel top-left: HudEditor fixed pos, or spring-follow the player ---
-    // mPosX/mPosY always stay as the HUD-editor coordinates (drag/save). The
-    // actual draw origin (drawX/drawY) may live on the player when Position Type
-    // is "Player", with a smooth spring + blend back when they go behind us.
     float drawX = mPosX;
     float drawY = mPosY;
     const int posType = posTypeS->mValue; // 0 = HudEditor, 1 = Player
@@ -434,10 +377,6 @@ void TargetHUD::OnRender() {
         drawY = mPosY;
     }
 
-    // Show/hide animation: a ZOOM (scale 0.86 -> 1.0 about the panel center) as
-    // it fades in, unwound as it fades out, plus a subtle slide and the per-hit
-    // scale "pop". The drawing rect carries all of this; the editor hitbox
-    // (mWidth/mHeight above) stays at the base size so dragging is stable.
     float az    = 0.86f + 0.14f * mFade;
     float slide = -(1.0f - mFade) * 14.0f * scale;
     // Extra motion juice in Player mode: tiny stretch driven by follow velocity.
@@ -453,10 +392,6 @@ void TargetHUD::OnRender() {
     float ccy = drawY + height * 0.5f;
     ImVec4 rect(ccx - dWidth * 0.5f - pop, ccy - dHeight * 0.5f - pop,
                 ccx + dWidth * 0.5f + pop, ccy + dHeight * 0.5f + pop);
-    // FOREGROUND list: the backdrop blur below goes on the BACKGROUND list, and
-    // ImGui always replays background before foreground, so this ordering is what
-    // guarantees the blur lands underneath the panel and its particles instead of
-    // painting over them.
     ImDrawList* drawList = ImGui::GetForegroundDrawList();
 
     // Zoom-scaled draw metrics so text/bars/head grow with the panel.
@@ -473,18 +408,6 @@ void TargetHUD::OnRender() {
     float dim   = dimS->mValue * mFade;
     ImColor themed = accentColor(0.0f);
 
-    // ---- Backdrop blur, emitted FIRST and onto a different list -------------
-    // A D2D blur is a draw callback that paints an OPAQUE blurred rect straight
-    // onto the backbuffer at replay time — it covers pixels, it does not blend
-    // with them. So it must never be recorded after anything it should sit
-    // behind. Two rules keep that true here:
-    //   * it is emitted before this panel's own particles and plate, and
-    //   * it goes on the BACKGROUND list while the panel draws on the FOREGROUND
-    //     list, so it also cannot erase Watermark/TabList/Coordinates, which all
-    //     draw to the background list earlier in the module order.
-    // Blur strength is scaled by mFade so the frosted backdrop eases out WITH
-    // the panel instead of staying full-strength until mFade snaps under the
-    // cull threshold (that snap was the "lingering blur" artifact on fade-out).
     if (mFade >= 0.01f) {
         bool guiOpen = false;
         if (Module* gui = ModuleManager::GetInstance().GetModuleByName("ClickGUI"))
@@ -502,11 +425,6 @@ void TargetHUD::OnRender() {
     // If the panel itself is invisible we only needed the layout pass.
     if (mFade < 0.01f) return;
 
-    // ---- Background: dim plate + hit glow + border -----------------------
-    // Flat Rise-style plate: no pseudo-3D bevels (the old white-top/black-bottom
-    // overlays read as fake depth), just the dim fill, the shadow and an
-    // optional border. The blur that used to live here now runs at the top of
-    // this function, before any geometry.
     ImRenderUtils::fillShadowRectangle(rect, ImColor(0, 0, 0), 0.4f * mFade, dRound, 10.0f * scale);
     // Themed glow flash that pulses outward on each landed hit.
     if (mHitPulse > 0.01f)
@@ -524,10 +442,6 @@ void TargetHUD::OnRender() {
         float hx = rect.x + dHeadInset;
         float hy = rect.y + ((rect.w - rect.y) - dHead) * 0.5f; // vertically centered
         ImVec4 hrect(hx, hy, hx + dHead, hy + dHead);
-        // Hit feedback lives ON the head icon: on a landed hit (the target's
-        // hurt timer rising) the head TIPS SIDEWAYS a few degrees around its
-        // center and flushes red, then springs back — no particles, no panel
-        // pop. The rotation is baked into the vertex positions below.
         const float tiltDeg = mHitPulse * 14.0f;                 // lean angle at impact
         const float tilt = tiltDeg * 0.017453293f;               // radians
         const float cs = std::cos(tilt), sn = std::sin(tilt);
@@ -547,20 +461,6 @@ void TargetHUD::OnRender() {
                                           ImVec2(0, 0), ImVec2(1, 1), headTint,
                                           dHead * 0.22f);
             } else {
-                // THE HIT-ANIMATION FIX, ROUND 2: the first attempt built the
-                // rotated rounded-rect with a hand-rolled PrimReserve vertex
-                // block. The vertices were provably correct, but the head still
-                // vanished for every tilted frame on live builds — the manual
-                // path relies on assumptions about the draw-list state that the
-                // rest of this pipeline (D2D callbacks, command splitting)
-                // evidently breaks. So the tilt path now uses ONLY the exact
-                // primitives the WORKING at-rest path uses inside
-                // ImDrawList::AddImageRounded: PushTexture -> Path* ->
-                // PathFillConvex -> ShadeVertsLinearUV -> PopTexture. The only
-                // difference from AddImageRounded is that the path points are
-                // rotated around the head centre before PathFillConvex sees
-                // them, and the UVs are remapped against the unrotated box so
-                // the face does not visibly spin inside its frame at <=14 deg.
                 const float r = std::min(dHead * 0.22f, e * 0.9f);   // corner radius
                 const float rx = e - r, ry = e - r;                  // arc centres offset
                 const float cAng[4][2] = { {  rx, -ry }, {  rx,  ry }, { -rx,  ry }, { -rx, -ry } };
@@ -580,9 +480,6 @@ void TargetHUD::OnRender() {
                 }
                 drawList->PathFillConvex(ImGui::GetColorU32(headTint.Value));
                 const int vtxEnd = drawList->VtxBuffer.Size;
-                // Map UV 0..1 over the UNROTATED head box (same contract as
-                // AddImageRounded) — a <=14 deg lean shears the UVs by at most
-                // a couple of pixels, invisible on a Minecraft face.
                 ImGui::ShadeVertsLinearUV(drawList, vtxStart, vtxEnd,
                                           ImVec2(hcx - e, hcy - e), ImVec2(hcx + e, hcy + e),
                                           ImVec2(0, 0), ImVec2(1, 1), true);
@@ -602,11 +499,6 @@ void TargetHUD::OnRender() {
     float cx = rect.x + dHeadInset + dHead + dGap;
     float cy = rect.y + dpad * 0.6f;
 
-    // Target-switch animation: for ~250 ms after the target identity changed,
-    // the incoming name slides in from the right and fades in with an
-    // easeOutCubic. The panel rect never moves, so the layout stays stable —
-    // only the name's x offset and alpha are animated. Health/dist values
-    // animate through mDispHealth/mDispDist (lerped above, never snapped).
     float swT = mSwitchAge / 0.25f;
     if (swT < 0.0f) swT = 0.0f;
     if (swT > 1.0f) swT = 1.0f;
@@ -618,17 +510,11 @@ void TargetHUD::OnRender() {
     cy += dNameSize + dpad * 0.4f;
 
     if (showHp) {
-        // While the target is live the panel eases toward the fresh read. When
-        // the target is lost (linger / fade-out) the last real values are kept
-        // frozen — never reset to 20 HP / 0 m — until a NEW target is acquired.
         float hp = mDispHealth;
         float frac = hp / 20.0f;
         if (frac < 0.0f) frac = 0.0f;
         if (frac > 1.0f) frac = 1.0f;
 
-        // Rise-style bar: a fully rounded PILL with the theme gradient as the
-        // fill. The optional numeric HP sits to the RIGHT of the bar (never
-        // overlapping it), and the bar shrinks to make room.
         float numW = 0.0f;
         std::string hs;
         if (hpNumS->mValue) {
@@ -642,10 +528,6 @@ void TargetHUD::OnRender() {
         ImVec4 barBg(cx, cy, cx + barW, cy + dBarH);
         ImRenderUtils::fillRectangle(barBg, ImColor(0, 0, 0, (int)(140 * mFade)), 1.0f, dBarH * 0.5f);
 
-        // 3D volume pass over any filled pill: a lit top fading out, a dark
-        // bottom fading in (two vertical rounded gradients), plus a crisp
-        // glossy top line — the bar reads as a shaded cylinder, not a flat
-        // stripe.
         auto shadeBar = [&](const ImVec4& pill) {
             if (pill.z - pill.x < 1.0f) return;
             ImRenderUtils::fillGradientRounded(drawList, pill,

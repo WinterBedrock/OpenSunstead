@@ -3,18 +3,6 @@
 
 namespace SDK { class Actor; }
 
-// Speed — increases the local player's horizontal movement speed.
-//
-// Vanilla model (rewritten): the old implementation RESCALED the existing
-// velocity vector, which lagged the input direction and never matched vanilla
-// movement (the user's complaint). We now REBUILD the horizontal velocity each
-// tick from the player's YAW + live WASD input, exactly like the game's own
-// move solver — ported from its MathUtils::getMotion +
-// getRotationKeyOffset. The BASE speed is the player's RAW movement-speed
-// attribute (Actor::getMovementSpeed), so Speed/Slowness effects scale
-// naturally; it falls back to a proven vanilla sprint-ground constant if the
-// attribute read is unavailable. This produces natural, vanilla-accurate
-// movement instead of the compounding/lagging velocity multiply.
 class Speed : public Module {
 public:
     Speed() : Module("Speed", "Increases movement speed", Category::Movement, 0) {
@@ -22,14 +10,8 @@ public:
         AddSetting(new NumberSetting("Multiplier", "Target ground-speed multiplier", 1.4f, 1.0f, 3.0f, 0.05f));   // [1]
         AddSetting(new BoolSetting("Strafe", "Move in the diagonal/strafe input direction (A/D and combos), not just straight ahead", true)); // [2]
         AddSetting(new BoolSetting("Use Player Speed", "Base the speed on the player's RAW movement-speed attribute (scales with Speed/Slowness effects). If off, uses a fixed vanilla ground-speed baseline.", true)); // [3]
-        // Bypass mode knobs (Type = Bypass): keep the SERVER-visible displacement
-        // inside what vanilla-accelerated movement can produce, so common
-        // speed-checks (displacement-per-tick vs predicted max) stay satisfied.
         AddSetting(new NumberSetting("Bypass Mult", "Effective multiplier in Bypass mode (server-safe band, ~1.1-1.6)", 1.35f, 1.0f, 1.6f, 0.05f)); // [4]
         AddSetting(new BoolSetting("Jump Boost", "Auto-hop while moving in Bypass mode (jump-boost band tolerates more displacement than ground ticks)", false)); // [5]
-        // APPENDED (Apollo-style hop modes): Height = jump/hold height impulse
-        // (/10, vanilla impulse is 0.42), Friction = per-tick air-speed keep
-        // factor (/10, 10 = no decay). Existing indexes above never move.
         AddSetting(new NumberSetting("Height", "Hop height impulse x10 (Apollo BunnyHop/Flareon/Custom)", 4.2f, 0.0f, 7.0f, 0.1f)); // [6]
         AddSetting(new NumberSetting("Friction", "Air speed kept per tick x10 (10 = none, Apollo SprintHop/Custom)", 10.0f, 0.0f, 10.0f, 0.1f)); // [7]
         AddSetting(new BoolSetting("Fast Fall", "Pull down faster once falling (Flareon-style)", false)); // [8]
@@ -70,9 +52,6 @@ private:
     void tickSprintHop(SDK::Actor* lp);
     void tickCustom(SDK::Actor* lp);
     void tickFlareonFast(SDK::Actor* lp);
-    // Shared horizontal driver for the hop modes: rebuild velocity in the live
-    // WASD direction at `target` blocks/tick. Returns false when there is no
-    // input or no state to write (caller keeps vanilla behaviour then).
     bool driveHorizontal(SDK::Actor* lp, float target);
     static bool readWASD(bool& w, bool& a, bool& s, bool& d);
     long long mLastTick = -1;

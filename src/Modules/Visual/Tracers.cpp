@@ -18,18 +18,10 @@ namespace {
 
 // Context resolution is SDK::resolveContext (SDK/Client/GameContext.h).
 
-// Column-major 4x4 multiply C = A * B  (glm/game layout: m[col*4 + row]).
-// mat4Mul / worldToScreen are consolidated in SDK/Math.h (mat4Multiply,
-// worldToScreen; both global, resolved via ADL).
 
 // Project one player's AABB to a 2D screen rect. Returns false if not visible.
 static bool projectActorBox(SDK::Actor* actor, const float* mvp, const Vec3& origin,
                             const ImVec2& screen, ImVec2* tl, ImVec2* br) {
-    // Build the world-space box the Latite/Hitboxes way: take the box DIMENSIONS
-    // from the AABB component but POSITION it from the reliable state-vector
-    // position (getPos). The raw AABB min/max can be stale or in a shifted
-    // frame, which made boxes land off the actual player. Rebasing onto getPos
-    // guarantees the box sits where the player actually is.
     Vec3 feet;
     AABB bb;
     __try {
@@ -42,11 +34,6 @@ static bool projectActorBox(SDK::Actor* actor, const float* mvp, const Vec3& ori
     if (!(dim.x > 0.05f && dim.x < 6.0f) || !(dim.y > 0.1f && dim.y < 6.0f)) {
         dim = Vec3(0.6f, 1.8f, 0.6f);
     }
-    // Recentre the box on the feet position (feet = bottom-centre in world).
-// getPos() is at EYE height, not the feet вЂ” using it as the box bottom made the
-    // box float ABOVE the player. bb.lower.y is the true world-space foot level,
-    // so anchor vertically there while keeping the reliable horizontal centre
-    // from getPos().x/z.
     float footY = bb.lower.y;
     if (!(footY < feet.y + 0.5f) || footY < feet.y - 4.0f) footY = feet.y - dim.y; // guard odd AABB
     Vec3 mn(feet.x - dim.x * 0.5f, footY,         feet.z - dim.z * 0.5f);
@@ -71,9 +58,6 @@ static bool projectActorBox(SDK::Actor* actor, const float* mvp, const Vec3& ori
 }
 
 
-// Project to screen even for points BEHIND the camera. For behind points we
-// mirror the clip coords and clamp the result to the screen border, so a tracer
-// still points toward off-screen / behind-you players. Always returns a point.
 static void worldToScreenBehind(const Vec3& world, const float* mvp, const Vec3& origin,
                                 const ImVec2& screen, ImVec2* out) {
     float px = world.x - origin.x, py = world.y - origin.y, pz = world.z - origin.z;
@@ -90,13 +74,6 @@ static void worldToScreenBehind(const Vec3& world, const float* mvp, const Vec3&
         out->x = sx; out->y = sy;
         return;
     }
-    // BEHIND the camera: vertical projection is meaningless (it inverts), so by
-    // convention a player behind you resolves to the BOTTOM of the screen. Only
-    // the horizontal (left/right) component is kept, mirrored because they're
-    // behind you. So a player directly behind -> bottom-centre (points down).
-    // Behind the camera the perspective divide flips left<->right (negative cw).
-    // Negate ONLY cw so the ratio cx/cw is mirrored back to the correct side;
-    // negating both cx and cw (as before) cancelled out and left it reversed.
     cw = -cw; if (cw < 0.0001f) cw = 0.0001f;
     float sx = (cx / cw + 1.0f) * 0.5f * screen.x;
     if (sx < 0) sx = 0; if (sx > screen.x) sx = screen.x;
@@ -108,9 +85,6 @@ static void worldToScreenBehind(const Vec3& world, const float* mvp, const Vec3&
 
 
 
-// SEH cannot live in a function that also has C++ objects with destructors
-// (C2712). Isolate the protected reads in their own helper.
-// pos + bounding box in one guarded read: SDK::sehGetPosBox (GameContext.h).
 
 void Tracers::OnRender() {
     if (!IsEnabled()) return;
@@ -167,12 +141,6 @@ void Tracers::OnRender() {
         Vec3 posNow; AABB bb;
         if (!SDK::sehGetPosBox(a, &posNow, &bb)) continue;
 
-        // Endpoint: the position the presented frame's model was drawn at —
-        // push-time pair + served push's alpha (same instant as the served
-        // camera). The old scheme read the raw sim pos (steps at tick rate)
-        // and ran an exponential smoother over it — the smoother LAGGED the
-        // model, so while a player moved the line end visibly trailed and
-        // snapped (the "teleporting" jitter).
         Vec3 rp = SDK::interpRenderPos(a);
         if (rp.x == 0.0f && rp.y == 0.0f && rp.z == 0.0f) continue;
         Vec3 dim = bb.higher - bb.lower;
@@ -188,9 +156,6 @@ void Tracers::OnRender() {
         else color = ImGui::ColorConvertFloat4ToU32(ImVec4(ccol[0], ccol[1], ccol[2], ccol[3]));
 
         if (mode == 1) {
-            // Arrow: direction = centre -> the target's projected point (for
-            // behind/off-screen players the direction uses the camera-space
-            // vector directly, so the ring always points truthfully).
             float ang = 0.0f;
             bool haveAng = false;
             ImVec2 to;

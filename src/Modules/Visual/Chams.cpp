@@ -10,7 +10,7 @@
 #include "../Player/FreeCam.h"
 #include "../../Core/Logger.h"
 #include "../ModuleManager.h"
-#include <MinHook.h>
+#include "../../Hooks/HookEngine.h"
 #include <Windows.h>
 #include <d3d12.h>
 #include <mutex>
@@ -32,7 +32,7 @@ typedef int (__fastcall* ActorRender_fn)(
     char    uiRendering);
 static ActorRender_fn oActorRender = nullptr;
 
-// dispatcher abi 
+// dispatcher abi
 typedef unsigned long long* (__fastcall* ActorRenderB_fn)(void*, __int64, void*, float*);
 typedef void                (__fastcall* ActorRenderC_fn)(void*, __int64, void*);
 static ActorRenderB_fn oActorRenderB = nullptr;
@@ -124,14 +124,7 @@ thread_local int  t_scopeDepth = 0;
 thread_local bool t_scopeWant  = false;
 unsigned long long s_lastDbgMs = 0;
 bool s_firstSubLogged = false;
-bool s_mhInit = false;
 uintptr_t s_dispatcherFn = 0;
-
-void chamsMHInit() {
-    static std::once_flag once;
-    std::call_once(once, []() { MH_Initialize(); });
-    s_mhInit = true;
-}
 
 Chams* chamsModule() {
     return static_cast<Chams*>(ModuleManager::GetInstance().GetModuleByName("Chams"));
@@ -893,26 +886,43 @@ bool Chams::ShowDebug() {
     return static_cast<BoolSetting*>(mod->mSettings[1])->mValue;
 }
 
-void Chams::EnsureDeviceHooks() {
+static bool hookListVtbl(void** vtbl);
+
+bool hookDeviceVtable(void** vtbl) {
+    if (!vtbl || !vtbl[10] || !sdk_safe_ptr(vtbl[10], 16)) return false;
+    if (!HookEngine::Create((LPVOID)vtbl[10], (LPVOID)&hkCreateGraphicsPipelineState,
+                            (LPVOID*)&oCreateGPS))
+        return false;
+    s_cgpsHooked = true;
+    LOG_INFO("Chams: CreateGraphicsPipelineState hooked", "Chams");
+    return true;
+}
+
+void Chams::HookDeviceVtables(void** devVt, void** listVt) {
     std::lock_guard<std::recursive_mutex> lock(s_psoMutex);
+    if (!s_cgpsHooked && !hookDeviceVtable(devVt))
+        LOG_ERROR("Chams: CreateGraphicsPipelineState hook failed", "Chams");
+    if (!s_listHooksHooked) {
+        if (listVt && hookListVtbl(listVt)) {
+            s_listHooksHooked = true;
+            s_armListHooks.store(false, std::memory_order_relaxed);
+            LOG_INFO("Chams: command-list hooks installed", "Chams");
+        } else {
+            s_armListHooks.store(true, std::memory_order_relaxed);
+        }
+    }
+}
+
+void Chams::EnsureDeviceHooks() {
+    if (s_cgpsHooked && s_listHooksHooked) return;
     RenderManager& rm = RenderManager::GetInstance();
     if (!rm.IsInitialized() || !rm.IsDX12()) return;
     ID3D12Device* dev = rm.GetD3D12Device();
     if (!dev) return;
-    chamsMHInit();
-    if (!s_cgpsHooked) {
-        void** vtbl = *(void***)dev;
-        if (vtbl && vtbl[10] &&
-            MH_CreateHook((LPVOID)vtbl[10], (LPVOID)&hkCreateGraphicsPipelineState,
-                          (LPVOID*)&oCreateGPS) == MH_OK &&
-            MH_EnableHook((LPVOID)vtbl[10]) == MH_OK) {
-            s_cgpsHooked = true;
-            s_d3d12Device = dev;
-            LOG_INFO("Chams: CreateGraphicsPipelineState hooked", "Chams");
-        } else {
-            LOG_ERROR("Chams: CreateGraphicsPipelineState hook failed", "Chams");
-        }
-    }
+    std::lock_guard<std::recursive_mutex> lock(s_psoMutex);
+    if (!s_cgpsHooked && !hookDeviceVtable(*(void***)dev))
+        LOG_ERROR("Chams: CreateGraphicsPipelineState hook failed", "Chams");
+    s_d3d12Device = dev;
     if (!s_listHooksHooked) s_armListHooks.store(true, std::memory_order_relaxed);
 }
 
@@ -929,16 +939,18 @@ static bool hookListVtbl(void** vtbl) {
     for (const Entry& e : entries) {
         if (!vtbl[e.idx] || !sdk_safe_ptr(vtbl[e.idx], 16))
             break;
-        if (MH_CreateHook((LPVOID)vtbl[e.idx], (LPVOID)e.detour, (LPVOID*)e.orig) != MH_OK ||
-            MH_EnableHook((LPVOID)vtbl[e.idx]) != MH_OK)
+        // Disabled first; all four activates only if every entry installed.
+        if (!HookEngine::Create((LPVOID)vtbl[e.idx], (LPVOID)e.detour, (LPVOID*)e.orig, false))
             break;
         created[ncreated++] = (LPVOID)vtbl[e.idx];
     }
-    if (ncreated == 4) return true;
-    for (int i = 0; i < ncreated; ++i) {
-        MH_DisableHook(created[i]);
-        MH_RemoveHook(created[i]);
+    if (ncreated == 4) {
+        for (int i = 0; i < 4; ++i)
+            HookEngine::Enable(created[i]);
+        return true;
     }
+    for (int i = 0; i < ncreated; ++i)
+        HookEngine::Remove(created[i]);
     oSetPipelineState = nullptr; oIASetVB = nullptr;
     oDrawIndexed = nullptr; oDraw = nullptr;
     static bool logged = false;
@@ -958,7 +970,6 @@ void Chams::NoteCommandList(ID3D12CommandList* list) {
     void** vtbl = *(void***)gl;
     gl->Release();
     if (!vtbl) return;
-    chamsMHInit();
     if (hookListVtbl(vtbl)) {
         s_listHooksHooked = true;
         s_armListHooks.store(false, std::memory_order_relaxed);
@@ -967,9 +978,8 @@ void Chams::NoteCommandList(ID3D12CommandList* list) {
 }
 
 void Chams::InstallHook() {
-    chamsMHInit();
     if (oActorRender && s_dispatcherFn) {
-        MH_EnableHook((LPVOID)s_dispatcherFn);
+        HookEngine::Enable((LPVOID)s_dispatcherFn);
         EnsureDeviceHooks();
         return;
     }
@@ -978,9 +988,8 @@ void Chams::InstallHook() {
         LOG_WARN("Chams: ActorRenderDispatcher::render signature unresolved; hook not installed", "Chams");
         return;
     }
-    if (MH_CreateHook((LPVOID)fn, &hkActorRenderDispatcher_render,
-                      (LPVOID*)&oActorRender) == MH_OK &&
-        MH_EnableHook((LPVOID)fn) == MH_OK) {
+    if (HookEngine::Create((LPVOID)fn, &hkActorRenderDispatcher_render,
+                      (LPVOID*)&oActorRender)) {
         s_dispatcherFn = fn;
         LOG_INFO("Chams: hooked ActorRenderDispatcher::render", "Chams");
     } else {
@@ -989,29 +998,27 @@ void Chams::InstallHook() {
 
     if (!s_dispatcherFnB) {
         const uintptr_t fb = SigManager::GetInstance().ActorRenderDispatcher_renderB;
-        if (fb && MH_CreateHook((LPVOID)fb, &hkActorRenderSiblingB,
-                                (LPVOID*)&oActorRenderB) == MH_OK &&
-            MH_EnableHook((LPVOID)fb) == MH_OK) {
+        if (fb && HookEngine::Create((LPVOID)fb, &hkActorRenderSiblingB,
+                                (LPVOID*)&oActorRenderB)) {
             s_dispatcherFnB = fb;
             LOG_INFO("Chams: hooked sibling dispatcher B (slot-48 pass)", "Chams");
         } else {
             LOG_WARN("Chams: sibling dispatcher B hook failed/unresolved", "Chams");
         }
     } else {
-        MH_EnableHook((LPVOID)s_dispatcherFnB);
+        HookEngine::Enable((LPVOID)s_dispatcherFnB);
     }
     if (!s_dispatcherFnC) {
         const uintptr_t fc = SigManager::GetInstance().ActorRenderDispatcher_renderC;
-        if (fc && MH_CreateHook((LPVOID)fc, &hkActorRenderSiblingC,
-                                (LPVOID*)&oActorRenderC) == MH_OK &&
-            MH_EnableHook((LPVOID)fc) == MH_OK) {
+        if (fc && HookEngine::Create((LPVOID)fc, &hkActorRenderSiblingC,
+                                (LPVOID*)&oActorRenderC)) {
             s_dispatcherFnC = fc;
             LOG_INFO("Chams: hooked sibling dispatcher C (depth-sorted pass)", "Chams");
         } else {
             LOG_WARN("Chams: sibling dispatcher C hook failed/unresolved", "Chams");
         }
     } else {
-        MH_EnableHook((LPVOID)s_dispatcherFnC);
+        HookEngine::Enable((LPVOID)s_dispatcherFnC);
     }
     EnsureDeviceHooks();
 }
@@ -1019,9 +1026,9 @@ void Chams::InstallHook() {
 void Chams::UninstallHook() {
     s_armListHooks.store(false, std::memory_order_relaxed);
     s_chamsOn.store(false, std::memory_order_relaxed);
-    if (s_dispatcherFn) MH_DisableHook((LPVOID)s_dispatcherFn);
-    if (s_dispatcherFnB) MH_DisableHook((LPVOID)s_dispatcherFnB);
-    if (s_dispatcherFnC) MH_DisableHook((LPVOID)s_dispatcherFnC);
+    if (s_dispatcherFn) HookEngine::Disable((LPVOID)s_dispatcherFn);
+    if (s_dispatcherFnB) HookEngine::Disable((LPVOID)s_dispatcherFnB);
+    if (s_dispatcherFnC) HookEngine::Disable((LPVOID)s_dispatcherFnC);
 }
 
 void Chams::OnEnable() { Chams::InstallHook(); }

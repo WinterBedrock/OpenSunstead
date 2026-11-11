@@ -1,6 +1,6 @@
 #include "RenderManager.h"
 #include "../SDK/Client/GameIcon.h"
-#include "../Hooks/DXHooks.h"   // g_ForceVSync / g_ForceDX11
+
 #include "../Modules/ModuleManager.h"
 #include "../Modules/Visual/ClickGUI.h"
 #include "../Modules/Visual/CommandMenu.h"
@@ -43,14 +43,6 @@ static std::string getRoamingStatePath() {
     return std::string(appdata) + "\\..\\Local\\Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\RoamingState\\";
 }
 
-// SEH-guarded check: returns true when a local player is present.
-// ClientInstance::getLocalPlayer() goes through vtable[0x1F]; on some builds
-// (1.26.30.x) that virtual call throws an access violation while the player
-// entity is still being set up on world entry. The renderLevel hook already
-// swallows that via tryResolveAndSwapPickRange ("getPickRange resolution
-// threw (suppressed)"). WndProc must do the same, otherwise the very first
-// key press in-world dereferences a bad pointer and crashes the game.
-// (Same pattern Coordinates.cpp uses in getCoordinatesSafe.)
 static bool hasLocalPlayerSafe() {
     __try {
         SDK::ClientInstance* cInst = SDK::ClientInstance::get();
@@ -63,33 +55,21 @@ static bool hasLocalPlayerSafe() {
     }
 }
 
-// Shared with the chat-open branch below: swallow the opening keypress's
-// follow-up WM_CHAR so the pre-filled "/" (or any open-key char) never
-// reaches the chat's InputText (it would insert into the typed text).
 static bool g_suppressNextOpenChar = false;
 static void markSuppressNextOpenChar() { g_suppressNextOpenChar = true; }
 
 LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     Module* clickGui = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
 
-    // Chat module: OUR open menu is a UI screen just like the ClickGUI — keys
-    // must go to ImGui and never reach the game (no movement, no vanilla
-    // chat/pause). IsOpen() is a plain flag read, safe at WndProc time.
     const bool chatMenuOpen = ::Chat::IsOpen();
     bool isClickGuiOpen = (clickGui && clickGui->IsEnabled());
     bool isUiOpen = isClickGuiOpen || chatMenuOpen || CommandMenu::IsOpen();   // the HUD editor mode is gone — HUD drag needs no key blocking
 
     if (isUiOpen) {
-        // The opening keypress's WM_CHAR (the '/' that opened the command
-        // prefill) must NOT reach the chat input — it would eat the typed
-        // text position. Swallow exactly one WM_CHAR after an open.
         if (uMsg == WM_CHAR && g_suppressNextOpenChar) {
             g_suppressNextOpenChar = false;
             return 0;
         }
-        // Chat menu open: keys feed OUR hand-rolled input (the ClickGUI-search
-        // machinery). They must not reach ImGui (no InputText anymore — its
-        // caret was the "|" duplicate) and never the game.
         if (chatMenuOpen && (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP ||
                              uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP ||
                              uMsg == WM_CHAR)) {
@@ -123,22 +103,12 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
             return 1;
         }
 
-        // Chat menu open: the ImGui window above already saw the event — the
-        // game must not see ANY key (ESC is handled inside the chat window;
-        // the ClickGUI search/binding machinery below is not applicable).
         if (chatMenuOpen && (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP ||
                              uMsg == WM_SYSKEYDOWN || uMsg == WM_SYSKEYUP ||
                              uMsg == WM_CHAR)) {
             return 0;
         }
 
-        // "Block Keys" (ClickGUI setting, default OFF): when ON, keyboard input
-        // is swallowed so movement/chat/Esc cannot escape to the game while the
-        // menu is open; when OFF the keys fall through to Minecraft (walk around
-        // with the menu open) and only the GUI bind key still toggles the panel
-        // shut via the fall-through handler below. A focused InputText (profile
-        // name modal) or a keybind capture force-blocks regardless — typing a
-        // name must never also walk the player.
         bool blockKeys = false;
         if (clickGui) {
             for (auto* setting : clickGui->mSettings) {
@@ -152,10 +122,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
         if (blockKeys && (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYDOWN ||
                           uMsg == WM_SYSKEYUP || uMsg == WM_CHAR)) {
-            // While a keybind row is capturing, swallow everything. Otherwise
-            // rebinding the menu to the key it already uses would toggle the panel
-            // shut on the same press, and Escape (used to clear a bind) would close
-            // the menu instead of reaching the capture loop.
             if (ClickGUI::IsBinding()) {
                 return 0;
             } else if (clickGui && wParam == clickGui->GetKeybind() && wParam != 0) {
@@ -169,10 +135,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 }
                 return 0;
             } else if (isClickGuiOpen && uMsg == WM_KEYDOWN && wParam != 0) {
-                // Live search: the panel has no input field — WM_KEYDOWN goes
-                // straight into the module filter (ToUnicode-translated inside
-                // ClickGUI, so layout/shift/cyrillic all work). The keybind
-                // branch above already let the toggle key through.
                 ClickGUI::FeedSearchKeyDown((unsigned int)wParam);
                 return 0;
             } else {
@@ -181,11 +143,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         } else if (!blockKeys && isClickGuiOpen &&
                    (uMsg == WM_KEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYDOWN ||
                     uMsg == WM_SYSKEYUP || uMsg == WM_CHAR)) {
-            // Block Keys OFF = "movement mode": ONLY W/A/S/D reach Minecraft so
-            // you can walk with the menu open; every other key is swallowed
-            // (chat/E/inventory never open). ALL keys still feed the live
-            // search — including WASD. The GUI bind key and Insert fall through
-            // so the panel can still be closed.
             if (ClickGUI::IsBinding() || ClickGUI::IsStringEditing()) return 0;
             const bool movement = (wParam == 'W' || wParam == 'A' ||
                                   wParam == 'S' || wParam == 'D');
@@ -195,9 +152,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 ClickGUI::FeedSearchKeyDown((unsigned int)wParam);
             if (!movement && !toggle) return 0;
             if (movement) return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam); // walk, no close
-            // Bind key: falls through to the toggle handler below.
-            // Insert (when it is not the bind): explicit close + swallow, so
-            // the panel always has a way out in movement mode.
             if (wParam == VK_INSERT && uMsg == WM_KEYDOWN && isClickGuiOpen && clickGui &&
                 wParam != clickGui->GetKeybind()) {
                 clickGui->SetEnabled(false);
@@ -212,9 +166,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     if (uMsg == WM_KEYDOWN) {
         // Uninject is Ctrl+L hold 3s — handled in OnRender (not instant keydown).
 
-        // Allow the ClickGUI toggle only in HUD screen (or if already open to close).
-        // The HUD editor has no keybind: it is opened from the side button on the
-        // pause/chat screens (see Render/HudEditor.cpp).
         bool inHud = (SDK::ScreenView::currentScreenName() == "hud_screen");
         if (clickGui && wParam == clickGui->GetKeybind() && wParam != 0 && (inHud || clickGui->IsEnabled())) {
             clickGui->Toggle();
@@ -224,11 +175,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         }
 
         if (!isUiOpen && SDK::ScreenView::currentScreenName() == "hud_screen") {
-            // The command-hints overlay owns the PREFIX key (default '.'): on the
-            // HUD screen it ALWAYS opens the Rise-style command hints panel —
-            // not a module, so there is no enable gate to trip over. The overlay
-            // eats the press, so the vanilla chat never opens for that key. Any
-            // other chat-open key still reaches the Chat module below.
             {
                 const std::string& prefix = CommandManager::GetInstance().mPrefix;
                 int prefixVk = 0;
@@ -242,9 +188,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                     return 0;
                 }
             }
-            // Chat module: hijack the bound chat key — open OUR menu and swallow
-            // the press so the vanilla chat screen never opens (HandlesOpenKey
-            // itself checks module-on + keybind + hud screen).
             if (::Chat::HandlesOpenKey((int)wParam)) {
                 // '/' is the vanilla "open as a command" key: the line must
                 // already start with a slash. The bound chat key opens blank.
@@ -266,26 +209,6 @@ LRESULT __stdcall WndProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 void RenderManager::Initialize(IDXGISwapChain* pSwapChain) {
     if (initialized) return;
 
-    // Force DX11 (Renderer module, Latite-faithful). If the game is running DX12
-    // and the user enabled Force DX11, remove the DX12 device once — Minecraft
-    // then recreates its swap chain on the DX11 backend, and our next Initialize
-    // takes the pure-DX11 path below. Turning the toggle back OFF cannot swap the
-    // live backend, so a game restart is required (the module notifies the user).
-    if (g_ForceDX11 && !dx12Removed) {
-        ID3D12Device* probe12 = nullptr;
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&probe12)) && probe12) {
-            ID3D12Device5* dev5 = nullptr;
-            if (SUCCEEDED(probe12->QueryInterface(__uuidof(ID3D12Device5), (void**)&dev5)) && dev5) {
-                LOG_INFO("Force DX11: removing DX12 device to force DX11 recreation", "RenderManager");
-                dev5->RemoveDevice();
-                dev5->Release();
-            }
-            probe12->Release();
-            dx12Removed = true;
-            return; // bail; the game will recreate as DX11 and re-enter Initialize
-        }
-        if (probe12) probe12->Release();
-    }
 
     if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&pDevice)) && pDevice) {
         isDX12 = false;
@@ -361,13 +284,6 @@ void RenderManager::Initialize(IDXGISwapChain* pSwapChain) {
         // Also try assets/font/ (repo layout) so local dev picks up bold variants.
         std::string assetDir = ConfigManager::GetSunsteadDir() + "assets\\";
         std::string fontDir  = assetDir + "font\\";
-        // System-font FALLBACK, merged into every theme font: the theme TTFs
-        // only ship Latin glyphs, so anything else (Cyrillic nicknames in
-        // chat/nametags, Greek, currency, typographic punctuation...) would
-        // render as ImGui's '?' replacement. Merging Segoe UI into each font
-        // (at the destination's implicit reference size, MergeMode + SizePixels 0)
-        // bakes those glyphs into the SAME atlas font — FindGlyph resolves
-        // them natively everywhere (Chat, NameTags, ClickGUI, ArrayList).
         auto mergeSystemFallback = [&]() {
             static const char* sysPath = []() -> const char* {
                 static char p[MAX_PATH] = {};
@@ -440,9 +356,6 @@ void RenderManager::Initialize(IDXGISwapChain* pSwapChain) {
             if (!geistFontBold)     geistFontBold     = geistFont;
             if (!geistFont)         geistFont         = geistFontBold;
             if (!manropeFont)       manropeFont       = manropeFontBold;
-            // Mojangles/Comfortaa have much taller metrics than Product Sans at
-            // the same px — the GUI trims them via ImRenderUtils::g_visualFontScale
-            // (set per-frame where the font is pushed), not at load time.
         }
 
         // Icons font (glyph set used by ClickGUI config buttons / search / etc.)
@@ -548,11 +461,6 @@ ImFont* RenderManager::pickFont(int idx, bool bold) const {
 void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
     if (!initialized) return;
 
-    // Synthetic right-click mailbox (FastUse / PearlTrigger / PlaceDelay).
-    // Module ticks run on the GAME thread; the game drains the mouse input
-    // queue on the thread that pumps window messages — this one. Feeding the
-    // clicks HERE puts them on the producing thread with no race, and the
-    // game consumes them at the top of the next frame.
     {
         int pending = SDK::g_pendingRightClicks.exchange(0, std::memory_order_relaxed);
         if (pending > 0) {
@@ -564,12 +472,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
 
     Module* clickGuiEarly = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
     bool isUiOpenEarly = (clickGuiEarly && clickGuiEarly->IsEnabled());
-    // Always acquire the D2D backbuffer surface. Blur/ghost effects must work
-    // during normal gameplay too (ArrayList, Watermark, HUD counters, MotionBlur),
-    // not only while ClickGUI/HudEditor is open. beginRender() is still invoked
-    // lazily by addBlur/addBlurOptimized/addGhostFrame, so frames that request no
-    // effect only pay for acquiring + releasing the surface (no bitmap copy or
-    // blur pass).
     bool needD2DSurface = true;
 
     UINT backBufferIdx = 0;
@@ -623,9 +525,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
 
     int fontIdx = 0;
     bool fontBold = false;
-    // The Font setting lives on ClickGUI, which owns the appearance block that
-    // used to be the settings-only Interface module. Read by name so setting order
-    // in the ctor is free to change.
     Module* iface = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
     if (iface) {
         for (auto* setting : iface->mSettings) {
@@ -641,17 +540,10 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
     // weight picked by the "Bold Font" toggle.
     ImFont* pushedFont = pickFont(fontIdx, fontBold);
     if (pushedFont) ImGui::PushFont(pushedFont);
-    // No per-font visual scaling: shrinking only the glyphs while the layout
-    // constants (row heights, paddings, panel chrome) kept their 18px metrics
-    // made every screen read shrivelled. Fonts render at their own metrics;
-    // the UI Scale setting scales the whole GUI uniformly if needed.
     ImRenderUtils::g_visualFontScale = 1.0f;
 
     Module* clickGui = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
     bool isUiOpen = isUiOpenEarly;
-    // While signatures are still scanning, the only thing on screen is the
-    // loading card. Module OnRender touches the game (and races ConfigManager
-    // ::Load), so it stays off until Initialize publishes Success.
     const bool injectionScanning =
         Sunstead::g_InjectionState == Sunstead::InjectionState::Scanning;
     if (!injectionScanning && isUiOpen) {
@@ -661,9 +553,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    // Server presence: window title "Sunstead > {server}" + connect debug.
-    // Skipped during the scan overlay — ClientInstance and the config are not
-    // ready, and this frame exists only to show the loading card.
     if (!injectionScanning)
     Sunstead::GetInstance().UpdateServerPresence();
 
@@ -671,9 +560,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
     if (!injectionScanning)
     UpdateChecker::GetInstance().OnFrame();
 
-    // Actor pair snapshots are captured AT PUSH TIME inside the
-    // CameraSetup::writeMatrices hook (GameHooks -> SDK::CapturePushPairs) —
-    // same instant as the camera matrices, so nothing needs refreshing here.
 
     if (!injectionScanning)
     ModuleManager::GetInstance().OnRender();
@@ -684,10 +570,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
     if (!injectionScanning)
     s_commandMenu.OnRender();
 
-    // HUD editor. Drawn after the modules so its frames land on top of the elements
-    // they outline, and driven from here rather than the module loop because it is
-    // not a module — it must keep animating, and keep showing its open button on
-    // the pause/chat screens, regardless of what is enabled.
     if (!injectionScanning)
     HudEditor::OnRender();
 
@@ -776,12 +658,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    // ----- Start-screen quick buttons (ImGui overlay) -----------------------
-    // Three frosted buttons at the bottom of the main menu. Settings opens the
-    // ClickGUI on its Settings tab; Configs and Change Logs open the matching
-    // tabs. Only on start_screen / pause_screen, and only while the in-game UI
-    // (ClickGUI or the HUD editor) is not already open. "Menu Buttons" on the
-    // ClickGUI module (default on) toggles them.
     {
         const std::string& sn = SDK::ScreenView::currentScreenName();
         bool menuButtonsOn = true;
@@ -865,12 +741,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
                 hoverAnim[i] += ((hov ? 1.0f : 0.0f) - hoverAnim[i]) * 0.18f;
                 float ha = hoverAnim[i];
 
-                // Rise-style frosted plate: a backdrop BLUR first (paints
-                // blurred world behind the button — the background list
-                // replays before any of this geometry), then a much lighter
-                // translucent plate over it. The old near-opaque dark fill
-                // read as a heavy slab ("слишком жирная"); frosted glass is
-                // the Rise menu-button language.
                 ImDrawList* bgList = ImGui::GetBackgroundDrawList();
                 if (bgList && a > 0.05f) {
                     D2D::addBlurOptimized(bgList, 9.0f,
@@ -970,9 +840,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
             ImVec2 center(screen.x / 2.0f, panelRect.y + 55.0f);
 
             if (Sunstead::g_InjectionState == Sunstead::InjectionState::Scanning) {
-                // Fill-up bars animation: a row of vertical bars that fill
-                // bottom-to-top in a flowing wave, plus a wide progress bar
-                // underneath that tracks an auto-advancing progress value.
                 constexpr int numBars = 7;
                 float barW = 8.0f;
                 float barGap = 7.0f;
@@ -1010,10 +877,6 @@ void RenderManager::OnRender(IDXGISwapChain* pSwapChain) {
                 float pbX = center.x - pbW * 0.5f;
                 float pbY = center.y + maxH * 0.5f + 16.0f;
 
-                // Continuous progress across the WHOLE init, including the frames
-                // before ImGui existed. Wall-clock from Initialize(), so the bar
-                // is already part-way filled on the first drawn frame instead of
-                // restarting at zero (and then jumping straight to the checkmark).
                 const unsigned long long scanStart = Sunstead::g_InjectionStartMs;
                 const float elapsed = scanStart
                     ? (float)(GetTickCount64() - scanStart) / 1000.0f

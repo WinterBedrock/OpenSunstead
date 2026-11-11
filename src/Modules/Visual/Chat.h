@@ -3,14 +3,14 @@
 #include <mutex>
 #include <Windows.h>
 
-// Chat — Rise-style (Java-like) chat menu for Bedrock
+// custom chat like rise cool yees
 class Chat : public Module {
 public:
     Chat() : Module("Chat", "Java-style chat menu with history (replaces the chat key)", Category::Visual, 0x54 /* 'T' */) {
         sInstance = this;
         mKeybindToggles = false;
-        mIsHudModule = true;   // HUD-editor: drag on pause screen
-        mPosY = 0.f;            // bottom-anchor sentinel (see OnRender)
+        mIsHudModule = true;
+        mPosY = 0.f;
         AddSetting(new NumberSetting("Width", "Panel width in px", 440.0f, 240.0f, 720.0f, 10.0f));
         AddSetting(new NumberSetting("Open Height", "Panel height in px while open", 190.0f, 100.0f, 500.0f, 10.0f));
         AddSetting(new NumberSetting("Closed Lines", "Lines kept visible while closed", 7.0f, 1.0f, 20.0f, 1.0f));
@@ -33,34 +33,21 @@ public:
 
     void UpdateSettingsVisibility();
 
-    // --- state shared with the WndProc / displayClientMessage hook ---
     static bool IsOpen() { return instance() && instance()->mOpen; }
     static Chat* instance() { return sInstance; }
     static bool RecordMessage(const std::string& line);
     static bool HandlesOpenKey(int vk);
     static bool PrefillsSlash(int vk) { return vk == VK_OEM_2 /* '/' */; }
 
-    // Stamp that a command was typed in the VANILLA chat. It is executed one
-    // render frame later (GameHooks queues it out of the send hook), by which
-    // time the chat screen has closed; without this marker RecordMessage would
-    // treat the command's reply as "the module owns the chat" and swallow it,
-    // so a vanilla-chat command would look like it ran nothing.
     static void NoteVanillaCommand();
 
-    // The next RecordMessage keeps the line in this panel and also lets it
-    // through to the real HUD chat. Translate Delay cancels the packet, so
-    // this is how that line still reaches vanilla chat.
     static void ArmVanillaPassthrough();
-    // Clears the one-shot and reports whether it was still armed.
     static bool DisarmVanillaPassthrough();
 
-    // The chat input buffer is OWNED by the chat (persistent).
     static char* InputBuffer();
     static void setInputBuffer(const char* text);
     std::string InputText() const;
 
-    // WndProc routes keys here while our menu is open (the input is hand-drawn,
-    // the same ToUnicode/reveal/sine-caret machinery as the ClickGUI search).
     static void FeedKeyDown(unsigned int vk);
 
     void Open(const std::string& prefill = std::string()) {
@@ -74,8 +61,8 @@ public:
         mOpen = false;
         mHistoryIndex = -1;
         mSavedDraft.clear();
-        mScrollTargetPx = 0.f;   // glide back to the bottom (Rise)
-        setInputBuffer("");      // Rise clears the typed text on close
+        mScrollTargetPx = 0.f;
+        setInputBuffer("");
     }
 
     static std::vector<std::string> sentSnapshot();
@@ -88,11 +75,6 @@ public:
     static void AddLine(const std::string& text);
 
 private:
-    // Rise's retargetable eased value (Animation + Easing, verbatim):
-    //   EASE_OUT_EXPO    1 - 2^(-10t)            (height, slide-in; 500ms)
-    //   EASE_OUT_ELASTIC 2^(-10t)sin((10t-0.75)2π/3)/2 + 1   (input open; 850ms)
-    //   EASE_IN_EXPO     2^(10t-10)             (input close; 300ms)
-    //   LINEAR                                 (input alpha; 400ms)
     enum RiseEasing { kEaseOutExpo = 0, kEaseInExpo, kEaseLinear, kEaseOutElastic };
     struct RiseAnim {
         float value = 0.f, target = 0.f, from = 0.f;
@@ -112,14 +94,14 @@ private:
 
     bool mOpen = false;
 
-    RiseAnim mHeightAnim;        // panel height, px (bottom-pinned)
-    RiseAnim mSlideIn;           // new-message slide-in, px
-    RiseAnim mInputPop;          // input row scale (elastic in / expo out)
-    RiseAnim mInputAlpha;        // input row alpha
+    RiseAnim mHeightAnim;
+    RiseAnim mSlideIn;
+    RiseAnim mInputPop;
+    RiseAnim mInputAlpha;
 
     float mScrollPx = 0.f;
     float mScrollTargetPx = 0.f;
-    float mVisibleRows = 0.f;     // Rise visibleLines counter
+    float mVisibleRows = 0.f;
     unsigned long long mFadeStampMs = 0;
     size_t mLastRowCount = 0;
 
@@ -127,7 +109,7 @@ private:
     int mHistoryIndex = -1;
 
     struct Line {
-        std::string text;                  // RAW, § codes intact
+        std::string text;
         unsigned long long atMs;
     };
     static std::mutex sHistoryMutex;

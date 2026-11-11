@@ -8,15 +8,6 @@ using namespace SDK;
 
 namespace {
 
-// The setOffhandSlot virtual, EXACT index — 78 on 1.26.50.04. Pinned by
-// REVERSING the LocalPlayer vtable (off_14E8E0BC0, 245 slots): slot 77 is
-// Actor::getCarriedItem (Horion's old dump 161 shifted by 84) and slot 79 is
-// Actor::getEquippedTotem (old 164 shifted by 85 — setCarriedItem was
-// removed between them). sub_14476AF80 (slot 78) takes (this, ItemStack
-// const&), reads the equipment component's slot 1, compares it with the new
-// stack, writes it through the base setter and broadcasts the offhand-change
-// event — exactly setOffhandSlot. The previous guess of 77 pointed at the
-// harmless getCarriedItem getter, which is why the totem never equipped.
 constexpr int kEquipSlot = 78;
 int g_equipSlot = -1;          // verified-once flag (or -2 = hopeless)
 long long g_lastProbeTick = -1;
@@ -190,9 +181,6 @@ bool Offhand::TryEquip(Actor* lp, int itemMode) {
     }
     g_equipSlot = kEquipSlot;
 
-    // Offhand now holds the item. Consume the source stack — but ONLY after
-    // verifying the decrement actually happened (the duplication bug came
-    // from consuming unconditionally after an unverified call chain).
     if (g_getItemIdx < 0) {
         g_getItemIdx = probeGetItemIndex(supplies);
         g_removeItemIdx = (g_getItemIdx >= 0) ? g_getItemIdx + 6 : -1;

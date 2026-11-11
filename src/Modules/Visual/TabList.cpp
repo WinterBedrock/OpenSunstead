@@ -20,10 +20,6 @@ namespace {
 // sehGetActorList / sehIsPlayer are consolidated in SDK::GameContext (ADL).
 
 
-// Normalise a name for tolerant matching between the server player-list name and
-// an actor's raw name: drop "§x" colour codes, whitespace, and case. The two
-// sources frequently disagree on formatting, which previously left every row
-// with a null actor -> blank head column.
 std::string normName(const std::string& in) {
     std::string o; o.reserve(in.size());
     for (size_t i = 0; i < in.size(); ++i) {
@@ -35,24 +31,26 @@ std::string normName(const std::string& in) {
     return o;
 }
 
-// Latite-proven actor skin path (1.26.30.05). Player::getSkin() is a pointer to
-// a SerializedSkinRef stored at Player+0xAB0; the ref's first pointer is a
-// wrapper whose SkinImage lives at wrapper+0xA0. That SkinImage is byte-
-// identical to SDK::mce::Image, so we reinterpret it and reuse SkinUtils.
-//
-// NOTE: we do NOT use SDK::Actor::getSkin() here — it depends on the runtime
-// global g_Actor_mSerializedSkin, which is never populated (== 0), so it always
-// returns nullptr and the head column renders blank. This fixed-offset path
-// needs no signature scan.
+// 1.26.62 (Latite-dumped): Actor+0xAD8 -> SerializedSkinRef* ->
+// skinImpl = *ref -> SkinImage @ skinImpl+0x80. PlayerListEntry's skin
+// (entry+0xA0, SerializedSkinRef inline) starts with the same skinImpl ptr.
+SDK::mce::Image* sehImageFromSkinImpl(uintptr_t skinImpl) {
+    if (!skinImpl) return nullptr;
+    constexpr uintptr_t kSkinImage = ::Layout::Actor::SkinImageInRef;   // 0x80
+    if (!sdk_safe_ptr((void*)skinImpl, kSkinImage + sizeof(SDK::mce::Image))) return nullptr;
+    return reinterpret_cast<SDK::mce::Image*>(skinImpl + kSkinImage);
+}
+
 SDK::mce::Image* sehImageFromActor(SDK::Actor* actor) {
     if (!actor) return nullptr;
     __try {
-        if (!sdk_safe_ptr(actor, 0xAB0 + sizeof(void*))) return nullptr;
-        uintptr_t ref = *reinterpret_cast<uintptr_t*>((uintptr_t)actor + 0xAB0);
+        constexpr uintptr_t kSkinRef = ::Layout::Actor::SerializedSkinRef; // 0xAD8
+        if (!sdk_safe_ptr(actor, kSkinRef + sizeof(void*))) return nullptr;
+        uintptr_t ref = *reinterpret_cast<uintptr_t*>((uintptr_t)actor + kSkinRef);
         if (!ref || !sdk_safe_ptr((void*)ref, sizeof(void*))) return nullptr;
-        uintptr_t wrapper = *reinterpret_cast<uintptr_t*>(ref);
-        if (!wrapper || !sdk_safe_ptr((void*)wrapper, 0xA0 + sizeof(SDK::mce::Image))) return nullptr;
-        return reinterpret_cast<SDK::mce::Image*>(wrapper + 0xA0);
+        uintptr_t skinImpl = *reinterpret_cast<uintptr_t*>(ref);
+        if (!skinImpl) return nullptr;
+        return sehImageFromSkinImpl(skinImpl);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
@@ -63,37 +61,19 @@ SDK::mce::Image* sehImageFromActor(SDK::Actor* actor) {
 
 // Context resolution is SDK::resolveContext (SDK/Client/GameContext.h).
 
-// SEH-guarded head decode from the actor's SerializedSkinRef (Latite path).
-// The image pointer is resolved under SEH; the decode runs outside the __try
-// because extractHeadRGBA returns a std::vector by value (C2712 forbids C++
-// object unwinding inside a __try frame).
 std::vector<unsigned char> sehHeadRGBA(SDK::Actor* actor, int outSize) {
     SDK::mce::Image* img = sehImageFromActor(actor);
     if (!img) return {};
     return SkinUtils::extractHeadRGBA(*img, outSize);
 }
 
-// Resolve the SerializedSkin embedded in a PlayerListEntry. skinPtr (+0x80) is
-// the SerializedSkinRef object pointer; the game lays the SerializedSkin out at
-// offset 0 of that block (ThreadOwner::Object), so a straight reinterpret works.
-// SEH-guarded + a probe read so a stale/garbage ref can't fault the render loop.
-SDK::SerializedSkin* sehSkinFromEntry(void* skinPtr) {
-    if (!skinPtr) return nullptr;
-    __try {
-        if (!sdk_safe_ptr(skinPtr, sizeof(SDK::SerializedSkin))) return nullptr;
-        SDK::SerializedSkin* s = reinterpret_cast<SDK::SerializedSkin*>(skinPtr);
-        volatile int probe = static_cast<int>(s->mSkinImage.format); // fault early if bad
-        (void)probe;
-        return s;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
-}
-
 // Head decode straight from the server-side player-list entry (works for ALL
 // connected players, not just nearby actors — this is the Latite path).
-std::vector<unsigned char> sehHeadRGBAFromEntry(void* skinPtr, int outSize) {
-    SDK::SerializedSkin* skin = sehSkinFromEntry(skinPtr);
-    if (!skin) return {};
-    return SkinUtils::extractHeadRGBA(skin->mSkinImage, outSize);
+// The row carries entry.skin.skinImpl (PlayerListEntry+0xA0 -> SerializedSkinRef).
+std::vector<unsigned char> sehHeadRGBAFromEntry(void* skinImpl, int outSize) {
+    SDK::mce::Image* img = sehImageFromSkinImpl((uintptr_t)skinImpl);
+    if (!img) return {};
+    return SkinUtils::extractHeadRGBA(*img, outSize);
 }
 
 } // namespace
@@ -107,10 +87,6 @@ void TabList::releaseHeads() {
 }
 
 void TabList::syncHoldMode() {
-    // Bind Type: 0 = Toggle, 1 = Hold. In Hold mode mHoldMode must be true so
-    // ModuleManager::OnKey does NOT toggle the module on keypress (the keybind
-    // is instead the hold-to-show key, checked in OnRender). In Toggle mode
-    // mHoldMode is false so the keybind toggles enable/disable normally.
     mHoldMode = (static_cast<EnumSetting*>(mSettings[0])->mValue == 1);
 }
 
@@ -137,12 +113,6 @@ void TabList::OnRender() {
     const float uiRounding = static_cast<NumberSetting*>(mSettings[9])->mValue;
     if (rowsPerCol < 1) rowsPerCol = 1;
 
-    // ---- Open/close animation ----------------------------------------------
-    // Decide whether the list SHOULD be visible this frame, then ease mAnim
-    // toward that target so the panel fades + scales in/out instead of popping.
-    // In Hold mode PollHoldBinds force-enables the module only while the key
-    // is down (and force-disables on release), so IsEnabled() already carries
-    // the whole key state — plus a manual ClickGUI enable keeps the list up.
     const bool onHud = SDK::isGameplayInputActive();
     const bool shouldShow = onHud && IsEnabled();
 
@@ -167,7 +137,7 @@ void TabList::OnRender() {
     // ---- Primary: use the server-side player list (ALL connected players) ----
     auto* playerList = SDK::sehGetPlayerList(level);
 
-    struct Row { std::string name; SDK::Actor* actor; bool self; void* skinPtr; };
+    struct Row { std::string name; SDK::Actor* actor; bool self; void* skinImpl; };
     std::vector<Row> rows;
 
     // Get the local player's name for self-detection.
@@ -183,7 +153,7 @@ void TabList::OnRender() {
             bool dup = false;
             for (auto& r : rows) if (r.name == nm) { dup = true; break; }
             if (dup) continue;
-            rows.push_back({ nm, nullptr, nm == localName, entry.second.skinPtr });
+            rows.push_back({ nm, nullptr, nm == localName, entry.second.skin.skinImpl });
         }
     }
 
@@ -236,16 +206,9 @@ void TabList::OnRender() {
         for (auto& r : rows) {
             auto it = mHeadTex.find(r.name);
             if (it != mHeadTex.end()) { it->second.second = frame; continue; }
-            // Primary: the PROVEN actor skin path (Player+0xAB0 -> wrapper+0xA0),
-            // the same path TargetHUD uses successfully. Covers every player the
-            // client has loaded as an actor (i.e. everyone in render distance).
             std::vector<unsigned char> rgba;
             if (r.actor) rgba = sehHeadRGBA(r.actor, 32);
-            // Fallback: decode from the server-side player-list entry. This is
-            // the only source for players outside render distance, but its
-            // skinPtr layout is less reliable across game builds, so it runs
-            // only when the actor path yielded nothing.
-            if (rgba.empty()) rgba = sehHeadRGBAFromEntry(r.skinPtr, 32);
+            if (rgba.empty()) rgba = sehHeadRGBAFromEntry(r.skinImpl, 32);
             if (rgba.empty()) continue; // skin not loaded yet; retry next frame
             ID3D11ShaderResourceView* srv = SkinUtils::createTextureRGBA(rgba.data(), 32, 32);
             if (srv) mHeadTex[r.name] = { (void*)srv, frame };
@@ -261,10 +224,6 @@ void TabList::OnRender() {
         }
     }
 
-    // ---- Layout (multi-column) ----------------------------------------------
-    // When the roster exceeds "Rows Per Column" it wraps into several equal-width
-    // columns placed side by side, mirroring Latite's per-tab column layout, so
-    // large lobbies always fit on screen.
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const float pad = 10.0f;
     const float rowH = textSize + 8.0f;
@@ -303,10 +262,6 @@ void TabList::OnRender() {
     auto A = [anim](float a) { return a * anim; };
 
     if (doBg) {
-        // Scale blur strength by the open/close anim so the frosted backdrop
-        // eases out WITH the panel. Previously the blur stayed full-strength
-        // for the whole fade and only vanished when the panel was culled, which
-        // left an ugly sharp-blur patch lingering after the list closed.
         const float blurStrength = blur * anim;
         if (blurStrength > 0.05f) D2D::addBlurOptimized(dl, blurStrength, panel, rounding);
         ImRenderUtils::fillShadowRectangle(panel, ImColor(0, 0, 0), A(0.55f), rounding, 18.0f);

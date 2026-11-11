@@ -2,7 +2,7 @@
 #include "../../Core/Logger.h"
 #include "../../Memory/SigManager.h"
 #include "../../Utils/MCSDK.h"
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -116,9 +116,8 @@ static void InstallHook() {
         LOG_WARN("ItemInHandRenderer::render signature not resolved - ViewModel unavailable", "ViewModel");
         return;
     }
-    if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkItemInHandRender),
-                       reinterpret_cast<LPVOID*>(&oRender)) != MH_OK
-        || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
+    if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkItemInHandRender),
+                       reinterpret_cast<LPVOID*>(&oRender))) {
         oRender = nullptr;
         LOG_ERROR("ItemInHandRenderer::render hook failed", "ViewModel");
         return;

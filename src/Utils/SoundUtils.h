@@ -7,9 +7,6 @@
 
 extern HMODULE g_hSelfModule;
 
-// Plays an embedded RCDATA sound resource. Handles both WAV and MP3 by
-// extracting the resource bytes to a temp file and driving it through MCI
-// (PlaySound's SND_RESOURCE only supports WAV). Playback is asynchronous.
 namespace SoundUtils {
 
     inline void PlayResource(int resId, const wchar_t* ext) {

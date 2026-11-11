@@ -1,9 +1,6 @@
 #pragma once
 #include "../Module.h"
 
-// KickSounds — plays a sound when a Disconnect packet (id 0x5) is received,
-// i.e. when the local player gets kicked. Sound is selectable in settings:
-//   0 = Fard, 1 = Mario, 2 = Windows Error.
 class KickSounds : public Module {
 public:
     KickSounds() : Module("KickSounds", "Plays a sound when you get kicked", Category::Misc, 0) {

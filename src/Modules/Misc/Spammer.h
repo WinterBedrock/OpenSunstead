@@ -1,10 +1,6 @@
 #pragma once
 #include "../Module.h"
 
-// Spammer - periodically sends a configured chat message from the client.
-// Supports a static delay or a randomized delay range, plus an optional
-// "bypass" mode that appends 6 random characters to the message to dodge
-// duplicate-message filters.
 class Spammer : public Module {
 public:
     Spammer() : Module("Spammer", "Automatically sends a chat message on a timer", Category::Misc, 0) {

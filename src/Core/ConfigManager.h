@@ -45,20 +45,15 @@ public:
         std::string path = GetConfigDirectory() + name + ".json";
         nlohmann::json json;
 
-        // Serialize prefix
         json["prefix"] = CommandManager::GetInstance().mPrefix;
-        // The eject hotkey lives in Config, not on a module, so it needs its own
-        // key here — the module loop below would never reach it.
         json["ejectKey"] = Config::UninjectKey;
 
-        // Serialize modules
         nlohmann::json modulesJson = nlohmann::json::array();
         for (auto* mod : ModuleManager::GetInstance().GetModules()) {
             nlohmann::json modJson;
             modJson["name"] = mod->GetName();
             modJson["enabled"] = mod->IsEnabled();
             modJson["keybind"] = mod->GetKeybind();
-            // HUD modules only — non-HUD modules don't have draggable pos/scale.
             if (mod->mIsHudModule) {
                 modJson["posX"] = mod->mPosX;
                 modJson["posY"] = mod->mPosY;
@@ -79,6 +74,8 @@ public:
                 } else if (setting->mType == SettingType::Color) {
                     ColorSetting* col = static_cast<ColorSetting*>(setting);
                     setJson["value"] = { col->mValue[0], col->mValue[1], col->mValue[2], col->mValue[3] };
+                } else if (setting->mType == SettingType::String) {
+                    setJson["value"] = static_cast<StringSetting*>(setting)->mValue;
                 }
                 settingsJson.push_back(setJson);
             }
@@ -87,7 +84,7 @@ public:
         }
         json["modules"] = modulesJson;
 
-        // Serialize ClickGUI columns positions
+        //todo change
         nlohmann::json columnsJson = nlohmann::json::array();
         for (const auto& pos : ClickGUI::GetCategoryPositions()) {
             nlohmann::json colJson;
@@ -120,7 +117,6 @@ public:
         }
         file.close();
 
-        // Deserialize prefix
         if (json.contains("prefix") && json["prefix"].is_string()) {
             CommandManager::GetInstance().mPrefix = json["prefix"].get<std::string>();
         }
@@ -128,11 +124,11 @@ public:
             Config::UninjectKey = json["ejectKey"].get<int>();
         }
 
-        // Deserialize modules
         if (json.contains("modules") && json["modules"].is_array()) {
             for (const auto& modJson : json["modules"]) {
                 if (!modJson.contains("name") || !modJson["name"].is_string()) continue;
                 std::string modName = modJson["name"].get<std::string>();
+                if (modName == "ChinaHat") modName = "Hat";
                 auto* mod = ModuleManager::GetInstance().GetModuleByName(modName);
                 if (!mod) continue;
 
@@ -145,7 +141,6 @@ public:
                 if (modJson.contains("keybind") && modJson["keybind"].is_number()) {
                     mod->SetKeybind(modJson["keybind"].get<int>());
                 }
-                // Only restore layout for HUD elements.
                 if (mod->mIsHudModule) {
                     if (modJson.contains("posX") && modJson["posX"].is_number())
                         mod->mPosX = modJson["posX"].get<float>();
@@ -173,10 +168,6 @@ public:
                         } else if (setting->mType == SettingType::Number && setJson["value"].is_number()) {
                             static_cast<NumberSetting*>(setting)->mValue = setJson["value"].get<float>();
                         } else if (setting->mType == SettingType::Enum && setJson["value"].is_number()) {
-                            // Stale configs can carry an index past a SHORTENED
-                            // enum list (options get retired over time, e.g. the
-                            // ClickGUI Animation entry). Clamping keeps the load
-                            // safe instead of indexing out of range at draw time.
                             auto* e = static_cast<EnumSetting*>(setting);
                             int v = setJson["value"].get<int>();
                             const int maxIdx = (int)e->mValues.size() - 1;
@@ -189,6 +180,8 @@ public:
                             for (int idx = 0; idx < 4; ++idx) {
                                 col->mValue[idx] = setJson["value"][idx].get<float>();
                             }
+                        } else if (setting->mType == SettingType::String && setJson["value"].is_string()) {
+                            static_cast<StringSetting*>(setting)->mValue = setJson["value"].get<std::string>();
                         }
                     }
                 }

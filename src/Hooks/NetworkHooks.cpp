@@ -1,14 +1,3 @@
-// Network layer hooks.
-//
-// - Packet receive: one detour per resolved packet-handler (high dedup on
-//   aliased ids); dispatches modules' OnPacketReceive, cancels packets, and
-//   carries the deferred re-delivery machine (Hold/Resend) Translate uses.
-// - Packet send: LoopbackPacketSender::send, the choke point every outgoing
-//   packet passes through. PlayerAuthInputPacket rotation/flags are rewritten
-//   here for silent aim, Scaffold/Baritone spoofing, Twerk and StarveSprint.
-// - RakNet::RakPeer::GetAveragePing: captures the live RTT value plus the
-//   (peer, AddressOrGUID) pair, so the Ping HUD module can replay the call
-//   on its own schedule.
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
@@ -24,7 +13,7 @@
 #include "../Modules/Combat/SilentRotation.h"
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -51,16 +40,6 @@ namespace {
     };
     std::vector<PacketHookEntry> packetHooks;
 
-    packetHandler_t findOriginalPacketHandler(uintptr_t handler) {
-        for (auto& entry : packetHooks)
-            if (entry.handler == handler) return entry.original;
-        return nullptr;
-    }
-
-    // Deferred re-delivery context. The receive hook writes ctx + holds +
-    // drains resends; modules call the public Hold/Resend API from other
-    // threads. Dispatch pointers are session-long engine objects; held packet
-    // lifetime is owned by g_heldPackets, never by the module.
     struct ResendCtx { void* dispatcher; void* netid; void* cb; packetHandler_t original; };
     struct ResendItem { std::shared_ptr<SDK::Packet> packet; ResendCtx ctx; };
     static std::mutex g_heldMutex;
@@ -69,6 +48,16 @@ namespace {
     static std::deque<ResendItem> g_resendQueue;
     static const std::shared_ptr<SDK::Packet>* g_currentPkt = nullptr;   // net thread only
     static SDK::Packet* g_currentRaw = nullptr;
+
+    // packetHooks/entry.original are written by the installer thread and read
+    // on the net thread — guard both sides with the shared held-packet mutex so
+    // the jump target can never be read mid-update.
+    packetHandler_t findOriginalPacketHandler(uintptr_t handler) {
+        std::lock_guard<std::mutex> lock(g_heldMutex);
+        for (auto& entry : packetHooks)
+            if (entry.handler == handler) return entry.original;
+        return nullptr;
+    }
 
     // Authoritative packet id from the packet's own getId() virtual
     // (vtable[1]); the hook-side handler id can alias several packet ids.
@@ -191,27 +180,24 @@ namespace {
             PacketHookEntry entry;
             entry.id = id;
             entry.handler = handler;
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(handler), &hkPacketReceive,
-                              reinterpret_cast<LPVOID*>(&entry.original)) == MH_OK) {
-                MH_QueueEnableHook(reinterpret_cast<LPVOID>(handler));
-                packetHooks.push_back(entry);
+            // Install the jump disabled, publish the entry, then activate:
+            // the net thread can only ever observe a handler that is either
+            // unhooked or fully registered (old MinHook queue/apply pattern).
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(handler), &hkPacketReceive,
+                              reinterpret_cast<LPVOID*>(&entry.original), false)) {
+                {
+                    std::lock_guard<std::mutex> lock(g_heldMutex);
+                    packetHooks.push_back(entry);
+                }
+                HookEngine::Enable(reinterpret_cast<LPVOID>(handler));
                 ++hooked;
             }
         }
-
-        if (hooked > 0)
-            MH_ApplyQueued();
 
         LOG_INFO("PacketLogger: hooked " + std::to_string(hooked) + " packet receive handlers", "GameHooks");
     }
 
     // ---------------------------------------------------------------------------
-    // Outgoing packets (PlayerAuthInputPacket rewriting)
-    // ---------------------------------------------------------------------------
-    // LoopbackPacketSender::send — vtable[2]. The server-side view is written
-    // right before serialization so the local first-person camera stays
-    // 100% mouse-driven (silent rotation). Payload layout (validated against
-    // the 1.26.50.04 payload validator sub_143C8A890): Packet base 0x30.
     static constexpr uintptr_t kPAI_mRot              = 0x30;  // vec2 {pitch, yaw}
     static constexpr uintptr_t kPAI_mPos              = 0x38;  // vec3
     static constexpr uintptr_t kPAI_mYHeadRot         = 0x44;
@@ -250,10 +236,6 @@ namespace {
         } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
-    // Rewrite rotation, head rot, interact rots and camera orientation to the
-    // spoofed aim; pre[3] receives the original values for the first-call log.
-    // The camera orientation matters: the server derives the BODY facing from
-    // it, so without that write only the head follows the spoof.
     static bool sehApplyPacketRot(void* packet, float yaw, float pitch, float* pre /*[3]*/) {
         __try {
             uintptr_t base = reinterpret_cast<uintptr_t>(packet);
@@ -312,9 +294,6 @@ namespace {
         } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
-    // Baritone / ConsumeMoveFrame path: the movement is already expressed in
-    // the spoofed frame. Packet layout: mMove = {x: strafe, y: fwd}; direction
-    // bits fwd -> UP/DOWN, strafe -> LEFT/RIGHT.
     static bool sehApplyBaritoneMove(void* packet, float fwd, float strafe) {
         __try {
             uintptr_t base = reinterpret_cast<uintptr_t>(packet);
@@ -336,10 +315,6 @@ namespace {
         } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
-    // Scaffold's own latched channel: the client walked against realYaw, the
-    // packet now claims spoofYaw — re-express the WASD frame in the spoofed
-    // one or the server's prediction lands elsewhere and corrects the player
-    // (the "Scaffold shoves me off the bridge" effect).
     static bool sehApplySilentMove(void* packet, float realYaw, float spoofYaw, int fwd, int strafe) {
         if (fwd == 0 && strafe == 0) return false; // standing still: nothing to restate
         __try {
@@ -405,10 +380,6 @@ namespace {
                             static_cast<Disabler*>(dis)->ModifyAuthInput(packet);
                     }
 
-                    // Silent aim (Aura/OreMiner/ChestAura). Only the rotation is
-                    // injected; positions go out honest through the game's own
-                    // InventoryTransactionPacket — spoofing mPos made the server
-                    // rewind with CorrectPlayerMovePrediction (the teleporting).
                     float yaw = 0.0f, pitch = 0.0f;
                     if (SilentRotation::Consume(yaw, pitch)) {
                         float pre[3] = { 0, 0, 0 };
@@ -423,9 +394,6 @@ namespace {
                                          " yaw=" + std::to_string(yaw), "GameHooks");
                             }
                         }
-                        // Baritone rides the same rotation channel; a walking
-                        // spoof must also restate the MOVEMENT in the spoofed
-                        // frame or the server corrects the player.
                         float bFwd = 0.0f, bStrafe = 0.0f;
                         if (Baritone::ConsumeSilentMove(bFwd, bStrafe)) {
                             sehApplyBaritoneMove(packet, bFwd, bStrafe);
@@ -499,38 +467,20 @@ namespace {
     }
 
     // ---------------------------------------------------------------------------
-    // Live ping (RakNet)
-    // ---------------------------------------------------------------------------
-    // RakNet::RakPeer::GetAveragePing(AddressOrGUID): averages the last five
-    // ping/pong samples into milliseconds, -1 when the remote is unknown.
-    // 1.26.60: RVA 0x24FCEF0, RakPeerInterface vtable slot 0x27; every caller
-    // reaches it virtually, so detouring the implementation catches all of
-    // them. The hook also snapshots the (peer, AddressOrGUID) pair so the Ping
-    // module can re-poll on its own schedule.
     typedef int(__fastcall* getAveragePing_t)(void* peer, void* addressOrGuid);
     static getAveragePing_t oRakPeerGetAveragePing = nullptr;
-    static constexpr size_t kAddressOrGuidSize = 136;
-
-    static std::mutex s_pingMutex;
-    static void* s_pingPeer = nullptr;
-    static unsigned char s_pingAog[kAddressOrGuidSize] = {};
-    static std::atomic<bool> s_pingSeeded{ false };
     std::atomic<int> s_lastPing{ -1 };
     std::atomic<DWORD> s_lastPingStamp{ 0 };
 
     int __fastcall hkRakPeerGetAveragePing(void* peer, void* addressOrGuid) {
-        const int ping = oRakPeerGetAveragePing(peer, addressOrGuid);
-        if (ping >= 0) {
-            s_lastPing.store(ping, std::memory_order_relaxed);
-            s_lastPingStamp.store(GetTickCount(), std::memory_order_relaxed);
-        }
-        {
-            std::lock_guard<std::mutex> lock(s_pingMutex);
-            s_pingPeer = peer;
-            std::memcpy(s_pingAog, addressOrGuid, kAddressOrGuidSize);
-        }
-        s_pingSeeded.store(true, std::memory_order_release);
-        return ping;
+        __try {
+            const int ping = oRakPeerGetAveragePing(peer, addressOrGuid);
+            if (ping >= 0) {
+                s_lastPing.store(ping, std::memory_order_relaxed);
+                s_lastPingStamp.store(GetTickCount(), std::memory_order_relaxed);
+            }
+            return ping;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
     }
 }
 
@@ -538,46 +488,79 @@ namespace NetPing {
     int LastMs() { return s_lastPing.load(std::memory_order_relaxed); }
     DWORD AgeMs() { return GetTickCount() - s_lastPingStamp.load(std::memory_order_relaxed); }
 
-    // __try wants a POD frame, so the actual call lives in its own helper
-    // (C2712: no object unwinding around __try).
-    static int sehPollCaptured(void* peer, void* aog) {
-        int ping = -1;
+    // Active connection ping, game-native path (same source Latite reads):
+    // NetworkSystem+0xE8 holds std::vector<unique_ptr<NetworkConnection>>;
+    // connection.networkPeer @+0x118, skip flag @+0x199; NetworkPeer virtual
+    // slot 2 fills netFilters::NetworkStatus { i32 level, i64 currentPing @8,
+    // i64 averagePing @0x10, pad to 0x48 }.
+    constexpr uintptr_t kNS_Connections    = 0xE8;
+    constexpr size_t    kConn_NetworkPeer  = 0x118;
+    constexpr size_t    kConn_ShouldSkip   = 0x199;
+    constexpr size_t    kStatusSize        = 0x48;
+    constexpr size_t    kStatus_CurrentPing = 8;
+    constexpr long long kPingMax          = 100000;
+
+    static bool sehGetActivePing(SDK::NetworkSystem* ns, int* out) {
         __try {
-            ping = oRakPeerGetAveragePing(peer, aog);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return -1;
-        }
-        return ping;
+            const uintptr_t vec = reinterpret_cast<uintptr_t>(ns) + kNS_Connections;
+            if (!sdk_safe_ptr(reinterpret_cast<void*>(vec), 0x18)) return false;
+            void** begin = *reinterpret_cast<void***>(vec);
+            void** end = *reinterpret_cast<void***>(vec + 8);
+            if (!begin || !end || end < begin
+                || reinterpret_cast<uintptr_t>(end) - reinterpret_cast<uintptr_t>(begin) > 0x400)
+                return false;
+            const size_t n = static_cast<size_t>(
+                reinterpret_cast<uintptr_t>(end) - reinterpret_cast<uintptr_t>(begin)) / sizeof(void*);
+            for (size_t i = 0; i < n; ++i) {
+                const uintptr_t conn = reinterpret_cast<uintptr_t>(begin[i]);
+                if (!conn || !sdk_safe_ptr(reinterpret_cast<void*>(conn), kConn_ShouldSkip + 1))
+                    continue;
+                if (*reinterpret_cast<const bool*>(conn + kConn_ShouldSkip)) continue;
+                void* peer = *reinterpret_cast<void**>(conn + kConn_NetworkPeer);
+                if (!peer || !sdk_safe_ptr(peer, sizeof(void*))) continue;
+                void** vt = *reinterpret_cast<void***>(peer);
+                if (!vt || !sdk_safe_ptr(vt, sizeof(void*) * 3)) continue;
+                void* fn = vt[2];
+                if (!fn || !sdk_safe_ptr(fn, 16)) continue;
+                unsigned char status[kStatusSize] = {};
+                using fn_t = void (__fastcall*)(void*, unsigned char*);
+                reinterpret_cast<fn_t>(fn)(peer, status);
+                const long long current = *reinterpret_cast<long long*>(status + kStatus_CurrentPing);
+                if (current > 0 && current <= kPingMax) {
+                    *out = static_cast<int>(current);
+                    return true;
+                }
+            }
+            return false;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
-    // Re-poll the captured remote at display cadence; a pure read of the
-    // peer's ping slots, SEH-guarded against a torn-down connection.
+    static void publish(int value) {
+        static bool s_announced = false;
+        if (!s_announced) {
+            s_announced = true;
+            LOG_INFO("Ping: networkPeer status live, value=" + std::to_string(value), "GameHooks");
+        }
+        s_lastPing.store(value, std::memory_order_relaxed);
+        s_lastPingStamp.store(GetTickCount(), std::memory_order_relaxed);
+    }
+
     void ForcePoll() {
-        if (!s_pingSeeded.load(std::memory_order_acquire) || !oRakPeerGetAveragePing)
-            return;
-        void* peer = nullptr;
-        unsigned char aog[kAddressOrGuidSize];
-        {
-            std::lock_guard<std::mutex> lock(s_pingMutex);
-            peer = s_pingPeer;
-            std::memcpy(aog, s_pingAog, kAddressOrGuidSize);
-        }
-        if (!peer) return;
-        const int ping = sehPollCaptured(peer, aog);
-        if (ping >= 0) {
-            s_lastPing.store(ping, std::memory_order_relaxed);
-            s_lastPingStamp.store(GetTickCount(), std::memory_order_relaxed);
-        }
+        SDK::ClientInstance* ci = SDK::ClientInstance::get();
+        if (!ci || !sdk_safe_ptr(ci, sizeof(void*))) return;
+        SDK::NetworkSystem* ns = ci->getNetworkSystem();
+        if (!ns || !sdk_safe_ptr(ns, kNS_Connections + 0x18)) return;
+        int value = 0;
+        if (sehGetActivePing(ns, &value))
+            publish(value);
     }
 }
-
 void gh::tryHookPacketSend() {
     if (g_packetSendHooked) return;
     void* sendFn = sehResolveSendFn();
     if (!sendFn) return;
-    if (MH_CreateHook(sendFn, reinterpret_cast<LPVOID>(&hkPacketSend),
-                      reinterpret_cast<LPVOID*>(&oPacketSend)) == MH_OK &&
-        gh::HookEnable(sendFn) == MH_OK) {
+    if (HookEngine::Create(sendFn, reinterpret_cast<LPVOID>(&hkPacketSend),
+                      reinterpret_cast<LPVOID*>(&oPacketSend))) {
         g_packetSendHooked = true;
         LOG_INFO("LoopbackPacketSender::send hooked (vtable[2]) @ " +
                  std::to_string(reinterpret_cast<uintptr_t>(sendFn)), "GameHooks");
@@ -627,9 +610,8 @@ void InstallNetworkHooks() {
     {
         uintptr_t pingAddr = SigManager::GetInstance().RakPeer_GetAveragePing;
         if (pingAddr) {
-            if (MH_CreateHook(reinterpret_cast<LPVOID>(pingAddr), &hkRakPeerGetAveragePing,
-                              reinterpret_cast<LPVOID*>(&oRakPeerGetAveragePing)) == MH_OK) {
-                gh::HookEnable(reinterpret_cast<LPVOID>(pingAddr));
+            if (HookEngine::Create(reinterpret_cast<LPVOID>(pingAddr), &hkRakPeerGetAveragePing,
+                              reinterpret_cast<LPVOID*>(&oRakPeerGetAveragePing))) {
                 LOG_INFO("RakPeer::GetAveragePing hooked (Ping HUD source)", "GameHooks");
             } else {
                 LOG_ERROR("FAILED to hook RakPeer::GetAveragePing", "GameHooks");

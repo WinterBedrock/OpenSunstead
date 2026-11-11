@@ -5,8 +5,7 @@
 #include "../../Memory/SigManager.h"
 #include "../../Modules/ModuleManager.h"
 #include "../../SDK/Client/ScreenView.h"
-
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 
 #include <cmath>
 #include <cstdint>
@@ -149,24 +148,12 @@ void __fastcall hkUIContextDrawImage(void* ctx, void* control, float* pos, float
 }
 
 bool installOne(uintptr_t addr, void* detour, void** original, const char* name) {
-    static std::once_flag once;
-    std::call_once(once, []() { MH_Initialize(); });
     if (!addr) {
         LOG_WARN(std::string(name) + ": signature unresolved", "HotbarAnimation");
         return false;
     }
-    MH_STATUS cr = MH_CreateHook(reinterpret_cast<LPVOID>(addr), detour, original);
-    if (cr != MH_OK) {
-        if (cr == MH_ERROR_ALREADY_CREATED && original && *original) {
-            MH_EnableHook(reinterpret_cast<LPVOID>(addr));
-            return true;
-        }
-        LOG_ERROR(std::string(name) + ": MH_CreateHook failed (" + std::to_string((int)cr) + ")", "HotbarAnimation");
-        return false;
-    }
-    MH_STATUS er = MH_EnableHook(reinterpret_cast<LPVOID>(addr));
-    if (er != MH_OK && er != MH_ERROR_ENABLED) {
-        LOG_ERROR(std::string(name) + ": MH_EnableHook failed (" + std::to_string((int)er) + ")", "HotbarAnimation");
+    if (!HookEngine::Create(reinterpret_cast<LPVOID>(addr), detour, original)) {
+        LOG_ERROR(std::string(name) + ": SafetyHook create failed", "HotbarAnimation");
         return false;
     }
     return true;
@@ -178,8 +165,6 @@ void HotbarAnimation::OnScreenFrame(SDK::UIControl* root) {
     g_armed = false;
     if (!root) return;
     pullSettings();
-    // "Hotbar Animation" == Off (enum index 3): no glide at all — the vanilla
-    // selection box jumps instantly. Early-out keeps the drawImage hook inert.
     if (g_ease == 3) return;
 
     g_instCount = 0;

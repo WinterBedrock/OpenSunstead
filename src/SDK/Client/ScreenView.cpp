@@ -42,15 +42,8 @@ void UIControl::forEachDescendantRaw(void (*fn)(UIControl*, void*), void* ctx) {
     walkChildren(this, fn, ctx, true);
 }
 
-// Depth-first search for a descendant whose control name equals `want` (the
-// Latite MovableChat approach targets controls by name, e.g. "chat_panel").
-// The comparison lives in a POD C-context so the walker stays SEH-clean
-// (std::string locals cannot live beside __try).
 namespace {
 struct FindNameCtx { const char* want; size_t wantLen; UIControl* out; };
-// POD-only string compare (MSVC std::string layout: SSO buf at +0, size at
-// +0x10, capacity at +0x18; >= 16 means heap pointer at +0). Never constructs
-// a std::string, so it is C2712-clean inside __try.
 bool sehNameEquals(UIControl* c, const char* want, size_t wantLen) {
     __try {
         const uintptr_t base = reinterpret_cast<uintptr_t>(c) + Offsets().UI_Name;
@@ -95,10 +88,6 @@ void UIControl::offsetY(float dy) {
     }
 }
 
-// Latite UIControl::updatePos — recompute the absolute position from the
-// parent's absolute + our parent-relative position (fixing the parent chain
-// first when its dirty bit is set), then CLEAR our dirty bit so the game's
-// layout pass does not overwrite the value. POD-only body (C2712).
 bool UIControl::updatePos() {
     const int childOff = Offsets().UI_Children;
     const int parentOff = Offsets().UI_Parent;
@@ -165,10 +154,6 @@ bool UIControl::shiftOffscreen(bool hide) {
     }
 }
 
-// 1.26.50.04: screen name lives at view->visualTree(+0x50)->rootControl(+0x08)
-// ->name(+0x20). Offsets were reversed from the binary (VisualTree+0x08 read by
-// getControlByName sub_1445B9650 and sub_1445B9160; the string trio at
-// UIControl+0x20/+0x30/+0x38 by sub_1445C7E30). See OffsetManager SV_*/VT_*/UI_*.
 std::string ScreenView::getScreenName() {
     VisualTree* vt = getVisualTree();
     if (!vt || !sdk_safe_ptr(vt, 0x10)) return "";

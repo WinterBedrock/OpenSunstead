@@ -9,16 +9,6 @@
 #include <string>
 #include <vector>
 
-// .goto — drives the Baritone module.
-//
-//   .goto                  status of the current path
-//   .goto <x> <y> <z>      walk to an absolute block position
-//   .goto <x> <z>          same, with y taken from where you stand
-//   .goto here             walk to the block you are standing on (a no-op that
-//                          is useful for confirming the search works at all)
-//   .goto stop             stop and clear the path
-//
-// Coordinates accept the vanilla `~` relative form, e.g. `.goto ~10 ~ ~-20`.
 class GotoCommand : public Command {
 public:
     GotoCommand() : Command("goto", "Pathfind and walk to a position (.goto x y z | stop)",

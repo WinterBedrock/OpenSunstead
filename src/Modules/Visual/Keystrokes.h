@@ -12,7 +12,7 @@ public:
         AddSetting(new NumberSetting("Background Dim", "Darkness of the background", 0.6f, 0.0f, 1.0f, 0.05f));
         AddSetting(new NumberSetting("Corner Rounding", "Rounding of the key boxes", 4.0f, 0.0f, 15.0f, 0.5f));
     }
-    
+
     void OnRender() override;
 
 private:

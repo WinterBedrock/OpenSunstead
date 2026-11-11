@@ -1,7 +1,6 @@
 #include "FastEat.h"
 #include "../../Utils/MCSDK.h"
 #include "../../SDK/SDK.h"
-#include "../../Core/Logger.h"
 #include <cstdint>
 #include <Windows.h>
 
@@ -11,26 +10,6 @@ namespace {
 // game itself compares in Mob::getItemUseDuration / startUsingItem on 1.26.50.04.
 constexpr uint32_t kItemInUseHash = 0x5B90AEFu;
 
-// Byte-exact replication of the game's own ItemInUseComponent access
-// (sub_1401EDE80, Mob::getItemUseDuration):
-//
-//   reg = *(Actor+0x10)          entt component-storage registry
-//   ent = *(uint32*)(Actor+0x18) entity id (Actor+0x8 is the EntityContext)
-//
-//   storage lookup — registry hash map:
-//     buckets:  vector @ reg+0x48, power-of-two bucket count
-//     chain:    bucket[hash & mask] -> descriptor[0] -> ... until -1
-//     desc:     32 bytes { u64 nextIdx; u32 hash @ +8; storage* @ +0x10 }
-//     reg+0x70: end-sentinel descriptor (must not be used)
-//
-//   element lookup — entt sparse set on the storage:
-//     page = (ent & 0x3FFFF) >> 11, slot = ent & 0x7FF
-//     idx  = sparsePages[page][slot]; present when (idx ^ ent&0xFFFC0000) <= 0x3FFFE
-//     elem = payloadPages[(idx & 0x3FF80) >> 4] + 16 * (idx & 0x7F)
-//     remainingTicks = *(int32*)(elem + 8)
-//
-// Returns a pointer to the remaining-ticks int, or nullptr when the player is
-// not using an item / anything in the chain is unreadable. POD-only + SEH.
 int* sehInUseDuration(SDK::Actor* lp) {
     __try {
         if (!lp || !sdk_safe_ptr(lp, 0x20)) return nullptr;
@@ -98,7 +77,6 @@ void FastEat::OnUpdate() {
 
     const float speed = static_cast<NumberSetting*>(mSettings[0])->mValue;
     if (speed <= 1.0f) return;                        // vanilla
-    const bool dbg = mSettings.size() > 1 && static_cast<BoolSetting*>(mSettings[1])->mValue;
 
     SDK::ClientInstance* ci = SDK::ClientInstance::get();
     SDK::Actor* lp = ci ? ci->getLocalPlayer() : nullptr;
@@ -133,9 +111,6 @@ void FastEat::OnUpdate() {
     int nv = v - burn;
     if (nv < 1) nv = 1;                               // let the game's own finish path run
     *dur = nv;
-
-    if (dbg)
-        LOG_INFO("counter " + std::to_string(v) + " -> " + std::to_string(nv), "FastEat");
 }
 
 void FastEat::OnEnable()  { mLastTick = -1; mBurnCarry = 0.0f; }

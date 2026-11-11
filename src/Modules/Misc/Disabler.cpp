@@ -35,17 +35,6 @@ void Disabler::OnDisable() {
     mSlipCount = 0;
 }
 
-// Hive Motion: rebuild the reported move so it agrees with the reported yaw.
-//
-// The packet carries the movement the client integrated against its REAL yaw
-// (mMove). Silent aim then overwrites mRot AND mYHeadRot with the spoofed yaw,
-// so the real one has to be captured before that rewrite and passed in here.
-// When the two frames differ the server reproduces a different world-space step
-// than the client took and flags the gap. Rotating the move vector into the
-// reported frame makes both sides agree.
-//
-// mMove is (strafe, forward). The world step it produced is recovered with the
-// real yaw, then re-expressed against the reported yaw.
 static void alignMoveToYaw(SDK::PlayerAuthInputPacket* pai, float realYaw) {
     const float strafe = pai->moveVec().x;
     const float fwd    = pai->moveVec().y;
@@ -164,9 +153,6 @@ void Disabler::AlignMove(void* packet, float realYaw) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-// MovePlayerPacket side of the modes that also have to agree with it. Modern
-// Bedrock sends it almost only on teleports, but the servers these modes face
-// still read it.
 static bool sehModifyMPP(void* packet, int mode, long long seq) {
     __try {
         if (!sdk_safe_ptr(packet, kMP_Span)) return true;

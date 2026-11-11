@@ -39,9 +39,6 @@ void Logger::Initialize() {
     }
 
 #ifdef SUNSTEAD_LOGGING
-    // Debug console is DEBUG-only: a console window in a release build is an
-    // instant client-detection tell, and everything printed to it is already
-    // stripped by the LOG_* macros.
     if (AllocConsole()) {
         FILE* stream = nullptr;
         freopen_s(&stream, "CONOUT$", "w", stdout);
@@ -60,11 +57,6 @@ void Logger::Initialize() {
     }
 #endif
 
-    // Rotate an oversized log away before opening: the debug client logs a
-    // lot (per-frame diagnostics), and an unbounded append-only file grew to
-    // ~100MB over a few sessions. Anything past the cap moves to logs.old.txt
-    // (one generation deep) so the live file always starts small and the
-    // disk footprint stays bounded at ~2x the cap.
     const std::string logPath = GetLogFilePath();
     {
         WIN32_FILE_ATTRIBUTE_DATA fad = {};

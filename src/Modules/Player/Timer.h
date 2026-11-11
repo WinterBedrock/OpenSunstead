@@ -11,8 +11,5 @@ public:
     void OnDisable() override;
     void OnTick() override;
 
-    // Shared timer-speed writer for hop/fly bypasses (Flareon-style modes).
-    // SEH-guarded; false when no timer is reachable. Restoring vanilla (20)
-    // is the caller's job on disable.
     static bool SetTps(float tps);
 };

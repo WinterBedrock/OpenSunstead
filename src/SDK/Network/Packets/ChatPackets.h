@@ -1,7 +1,4 @@
 #pragma once
-// Wire-level layouts: TextPacket (id 9, body ctor sub_14660AC70 = createPacket
-// case 9); CommandOutputPacket (id 79, sub_14861A820 = case 79, CommandOutput
-// move ctor sub_1443A0310).
 #include "../../Types.h"
 #include "Packet.h"
 #include <cstring>
@@ -9,14 +6,6 @@
 
 namespace SDK {
 
-// --- TextPacket body ---
-// +0x30 translationNeeded; +0x38 xboxUserId (XUID digits); +0x58 platformChatId;
-// +0x78 filteredMessage (present flag +0x98); +0xA0 TextPacketType byte;
-// +0xA8 string str; +0xC8 variant storage; discriminator @+0xE8.
-// The +0xE8 discriminator SELECTS what +0xA8/+0xC8 hold:
-//   disc 0 — "message only":   str(+0xA8) = message
-//   disc 1 — "author+message": str(+0xA8) = AUTHOR NAME, message rides +0xC8
-//   disc 2 — "message+params": str(+0xA8) = message, params at +0xC8
 constexpr uintptr_t kTextPktType   = 0xA0;  // byte, the real TextPacketType
 constexpr uintptr_t kTextPktStr    = 0xA8;  // string — message, or the AUTHOR when disc == 1
 constexpr uintptr_t kTextPktData   = 0xC8;  // variant storage — the message when disc == 1

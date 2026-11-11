@@ -4,12 +4,6 @@
 #include <climits>
 #include <vector>
 
-// OreMiner — classic auto ore breaker for 1.26.30.05.
-//
-// Scans for enabled ore types within Range, starts/continues/finishes the
-// GameMode destroy pipeline on the closest exposed ore (priority High→Low),
-// switches to the best pickaxe, and injects silent rotation toward the block.
-// Optional PathFind uncover digs exposed blocks that open a path to buried ore.
 class OreMiner : public Module {
 public:
     enum class UncoverMode { None = 0, PathFind = 1 };
@@ -37,32 +31,14 @@ public:
         AddSetting(new BoolSetting("Mining Bar", "Draw the centered Mining progress bar below screen center", true));  // [16]
         AddSetting(new BoolSetting("Bar Icon", "Show the mined ore's real texture inside the plate, left of the label", true)); // [17]
         AddSetting(new BoolSetting("Debug", "Print diagnostics to the console", false));                               // [18]
-        // Plate style — the same knobs (and the same names) the counter HUD
-        // modules expose, so every plate in the client reads the same.
-        // See CounterStyle.h / Scaffold.
         AddSetting(new NumberSetting("Background Blur", "Backdrop blur strength behind the plate", 6.0f, 0.0f, 20.0f, 0.5f)); // [19]
         AddSetting(new NumberSetting("Background Dim", "Plate fill opacity (0..1)", 0.55f, 0.0f, 1.0f, 0.02f));        // [20]
         AddSetting(new NumberSetting("Shadow Opacity", "Opacity of the plate's drop shadow (0..1)", 0.35f, 0.0f, 1.0f, 0.02f)); // [21]
         AddSetting(new NumberSetting("Background Rounding", "Plate corner radius (px)", 6.0f, 0.0f, 20.0f, 1.0f));     // [22]
         AddSetting(new BoolSetting("Text Shadow", "Draw a drop shadow behind the bar glyphs (off = crisp text)", false)); // [23]
         AddSetting(new BoolSetting("Gradient Numbers", "Draw the percentage in the live theme gradient", true));       // [24]
-        // Destruction mode. Silent (default): the arm swing is an AnimatePacket
-        // only (no local first-person animation) and the tool slot swap is
-        // client-side with a single serverhold MobEquipment on change - the
-        // same packet-only pattern Scaffold's Silent mode uses. Default: the
-        // local GameMode::swing() animates the arm and the slot flip is purely
-        // client-side. The destroy transactions themselves go through the
-        // game's own pipeline in BOTH modes.
         AddSetting(new EnumSetting("Mode", "Destruction mode", 1, { "Default", "Silent" }));                             // [25]
 
-        // Silent-mode scrubbers. The arm swing reads as a first-person HUD dip
-        // while slots hot-swap; "Show Swing" (default off) re-enables the local
-        // animation on demand. "Silent Slot Switch" (default on) is the
-        // serverhold MobEquipment pattern: when off, the pickaxe is picked
-        // purely client-side without informing the server (slower tool, but
-        // completely invisible). The Swing setting above still controls
-        // whether a swing is emitted at all — Show Swing only decides whether
-        // in Silent mode it's a packet-only swing (off = hidden, default).
         AddSetting(new BoolSetting("Show Swing", "In Silent mode, also play the local first-person swing animation (packet swing still goes out)", false)); // [26]
         AddSetting(new BoolSetting("Silent Slot Switch", "Silent mode tool switch: public serverhold (ON, recommended) or purely client-side (OFF)", true)); // [27]
 
@@ -106,10 +82,6 @@ public:
     // icon is painted by the ImGui pass with the ore's real texture.
     void DrawGameIcon(void* mcuirc, const std::string& screenName);
     void renderMiningBar();
-    // Appearance driver for the whole bar plate (0 = hidden, 1 = shown): drives
-    // the scale-up on appear (ease-out-back from 0.85) / scale-down on disappear
-    // (to 0.90) together with the plate alpha, so a value inside (0,1) keeps the
-    // fade-out rendering.
     float mBarAnim = 0.f;
     // First-render layout latch: centered default applied once, then the HUD
     // editor owns the position.
@@ -133,11 +105,6 @@ private:
     SDK::BlockPos mCurrentBlock{ INT_MAX, INT_MAX, INT_MAX };
     SDK::BlockPos mTargettingBlock{ INT_MAX, INT_MAX, INT_MAX };
     int   mCurrentFace = -1;
-    // Local vanilla-timing accumulator. Mirrors continueDestroyBlock's own
-    // gm+0x24 progress (elapsed/0.05 * per-tick rate) because the engine's copy
-    // is reset every tick while OreMiner re-issues startDestroy to satisfy the
-    // same-pos gate — see OnUpdate. Finished at kBreakDone exactly like the
-    // engine (0.99998999).
     float mBreakingProgress = 0.f;
     float mLastRate = 0.f;   // most recent per-tick rate, for the debug line
     bool  mIsMining = false;
@@ -145,10 +112,6 @@ private:
     bool  mShouldRotate = false;
     int   mToolSlot = -1;
     int   mPrevSlot = -1;
-    // Serverhold bookkeeping (Silent mode): the slot the server currently
-    // believes is selected. One MobEquipment goes out only when this changes —
-    // per-tick swap/restore floods were getting transactions cancelled on
-    // servers. Same pattern Scaffold's Silent mode uses.
     int   mServerSlot = -1;
     // Last observed visible selection (Silent): a change means the game sent
     // its own MobEquipment, so the server no longer holds the tool.
@@ -171,11 +134,6 @@ private:
     SDK::BlockPos mLastQueuedBlock{ INT_MAX, INT_MAX, INT_MAX };
     float mRenderLerp = 1.f;
     bool  mRenderHavePos = false;
-    // Icon geometry for the ore texture drawn INSIDE the plate (left of the
-    // "Mining" label) by the ImGui pass, in the animated (zoomed) coordinates it
-    // actually occupies. mBarIconWanted is true while it is being drawn; nothing
-    // else consumes these any more — the game icon pass (DrawGameIcon) is a
-    // no-op and the HUD editor only reads mPosX/mPosY/mWidth/mHeight.
     float mBarIconX = 0.f, mBarIconY = 0.f, mBarIconSize = 0.f;
     bool  mBarIconWanted = false;
 };

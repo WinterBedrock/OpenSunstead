@@ -1,21 +1,6 @@
 #pragma once
 #include "../Module.h"
 
-// AutoTool — automatically switches the held hotbar slot to the most efficient
-// tool for the block the crosshair is on.
-//
-// Each frame (while mining, by default) it:
-//   1. reads the Level's ray-cast HitResult; acts only when it is a BLOCK hit,
-//   2. resolves that block's identifier via BlockSource -> Block -> BlockLegacy,
-//   3. classifies the block to its ideal tool family (pickaxe / axe / shovel /
-//      sword / shears),
-//   4. scans the hotbar (slots 1-9) for the best-tier tool of that family and,
-//   5. switches to it via a MobEquipment hotbar swap (the same server-synced
-//      slot path Scaffold/PearlTrigger use) so the server applies the correct
-//      break speed.
-//
-// "Switch Back" restores the slot held before the switch once the player stops
-// mining, so the tool swap is transparent.
 class AutoTool : public Module {
 public:
     AutoTool() : Module("AutoTool", "Switches to the most efficient tool for the targeted block", Category::Player, 0) {

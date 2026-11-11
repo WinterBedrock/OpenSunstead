@@ -57,11 +57,6 @@ bool AntiBot::IsBot(SDK::Actor* actor) {
     // gates its targets, but other callers may want this.
     if (GetNonPlayerCheck() && !isPlayer) return true;
 
-    // Invisibility: a "player" carrying the synced Invisible flag. Server-side
-    // bot spawns are commonly flagged invisible so their NPC models never
-    // render; a real player under an invisibility potion is ALSO invisible,
-    // but attacking them is pointless anyway — either way skip.
-    // (getStatusFlag is SEH-guarded internally: -1 on any fault, never throws.)
     if (GetInvisibleCheck() && isPlayer) {
         if (actor->getStatusFlag(ActorFlags::Invisible) == 1) return true;
     }
@@ -76,9 +71,6 @@ bool AntiBot::IsBot(SDK::Actor* actor) {
         }
     }
 
-    // PlayerList membership: a "player" not present in the server tab list is a
-    // client-side fake (the classic Hive shadow bot). This is the strongest
-    // signal now that the tab list is read correctly.
     if (GetPlayerListCheck() && isPlayer) {
         SDK::Level* level = nullptr; SDK::Actor* lp = nullptr;
         if (SDK::resolveContext(nullptr, &level, &lp)) {

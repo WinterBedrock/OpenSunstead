@@ -3,7 +3,7 @@
 #include "../../Commands/CommandManager.h"
 #include "../../Core/Logger.h"
 #include "../../SDK/Types.h"
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 #include <atomic>
 
 namespace {
@@ -47,21 +47,23 @@ bool installHooks() {
     const uintptr_t nonCached = sig.CameraAvoidanceSystem_tickNonCached;
     if (!validPair(cached, sig.CameraAvoidanceSystem_vtableCached) ||
         !validPair(nonCached, sig.CameraAvoidanceSystem_vtableNonCached)) return false;
-    if (MH_CreateHook(reinterpret_cast<void*>(cached), &hkCached, reinterpret_cast<void**>(&oCached)) != MH_OK)
+    // Create both jumps disabled so a failure half-way never leaves an active
+    // hook without its bookkeeping.
+    if (!HookEngine::Create(reinterpret_cast<void*>(cached), &hkCached,
+                            reinterpret_cast<void**>(&oCached), false))
         return false;
-    if (MH_CreateHook(reinterpret_cast<void*>(nonCached), &hkNonCached, reinterpret_cast<void**>(&oNonCached)) != MH_OK) {
-        MH_RemoveHook(reinterpret_cast<void*>(cached));
+    if (!HookEngine::Create(reinterpret_cast<void*>(nonCached), &hkNonCached,
+                            reinterpret_cast<void**>(&oNonCached), false)) {
+        HookEngine::Remove(reinterpret_cast<void*>(cached));
         oCached = nullptr;
         return false;
     }
     g_cachedVtable = sig.CameraAvoidanceSystem_vtableCached;
     g_nonCachedVtable = sig.CameraAvoidanceSystem_vtableNonCached;
-    if (MH_EnableHook(reinterpret_cast<void*>(cached)) != MH_OK ||
-        MH_EnableHook(reinterpret_cast<void*>(nonCached)) != MH_OK) {
-        MH_DisableHook(reinterpret_cast<void*>(cached));
-        MH_DisableHook(reinterpret_cast<void*>(nonCached));
-        MH_RemoveHook(reinterpret_cast<void*>(cached));
-        MH_RemoveHook(reinterpret_cast<void*>(nonCached));
+    if (!HookEngine::Enable(reinterpret_cast<void*>(cached)) ||
+        !HookEngine::Enable(reinterpret_cast<void*>(nonCached))) {
+        HookEngine::Remove(reinterpret_cast<void*>(cached));
+        HookEngine::Remove(reinterpret_cast<void*>(nonCached));
         oCached = nullptr;
         oNonCached = nullptr;
         return false;
@@ -73,8 +75,8 @@ bool installHooks() {
 
 void CameraClip::OnEnable() {
     if (!installHooks()) {
-        CommandManager::GetInstance().PrintToChat("§cUnable to find CameraClipFunc!");
-        LOG_ERROR("CameraClip: verified tick variants unavailable — module disabled", "CameraClip");
+        //CommandManager::GetInstance().PrintToChat("§cUnable to find CameraClipFunc!");
+        //LOG_ERROR("CameraClip: verified tick variants unavailable — module disabled", "CameraClip");
         SetEnabled(false);
         return;
     }

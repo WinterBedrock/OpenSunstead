@@ -9,7 +9,7 @@ public:
     void OnEnable() override;
     void OnDisable() override;
 
-    // MinHook targets (called from GameHooks::Initialize once).
+    // SafetyHook targets (called from GameHooks::Initialize once).
     static void InstallHooks();
     static bool IsActive();
 

@@ -34,9 +34,6 @@ public:
     ImFont* manropeFontBold = nullptr;  // Manrope Bold
     ImFont* geistFontBold = nullptr;    // Geist Bold
 
-    // Resolves a body font for the ClickGUI "Font" enum + its "Bold Font"
-    // toggle. idx: 0=Product Sans, 1=Minecraft, 2=Comfortaa, 3=Manrope,
-    // 4=Geist. Unknown indices fall back to Product Sans.
     ImFont* pickFont(int idx, bool bold) const;
     ImFont* iconFont = nullptr;
 
@@ -63,8 +60,5 @@ private:
     ID3D11Resource** wrappedBackBuffers = nullptr;
 
     bool initialized = false;
-    // Force-DX11 (Renderer module): set once we have removed the DX12 device so
-    // we do not try to remove it repeatedly while the game recreates its swap
-    // chain as DX11.
-    bool dx12Removed = false;
+
 };

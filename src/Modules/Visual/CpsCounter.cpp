@@ -23,7 +23,6 @@ int CpsCounter::GetCPS(std::vector<double>& clickList) {
 
 void CpsCounter::OnRender() {
     if (!IsEnabled()) return;
-    // Also visible while the HUD editor is open (it runs on the pause/chat screens).
     if (!HudEditor::HudVisible()) return;
 
     bool lmb = GetAsyncKeyState(VK_LBUTTON) & 0x8000;

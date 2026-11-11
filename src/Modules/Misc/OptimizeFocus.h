@@ -1,9 +1,6 @@
 #pragma once
 #include "../Module.h"
 
-// OptimizeFocus — when the game window loses focus (alt-tabbed), throttles the
-// render thread to a low FPS cap to save GPU/CPU, and draws a dim overlay with
-// a centered "window not focused" message. Restores instantly on refocus.
 class OptimizeFocus : public Module {
 public:
     OptimizeFocus() : Module("OptimizeFocus", "Saves resources when the game is unfocused", Category::Misc, 0) {

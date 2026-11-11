@@ -26,7 +26,11 @@ static void ResolveSound(int type, bool enabled, const char** outName, int* outR
             *outName  = enabled ? "smooth_on.wav" : "smooth_off.wav";
             *outResId = enabled ? IDR_SOUND_SMOOTH_ON : IDR_SOUND_SMOOTH_OFF;
             break;
-        case 0: // Default
+        case 3: // Ding
+            *outName  = enabled ? "ding_on.wav" : "ding_off.wav";
+            *outResId = enabled ? IDR_SOUND_DING_ON : IDR_SOUND_DING_OFF;
+            break;
+        case 0: // Click
         default:
             *outName  = enabled ? "on.wav" : "off.wav";
             *outResId = enabled ? IDR_SOUND_ON : IDR_SOUND_OFF;

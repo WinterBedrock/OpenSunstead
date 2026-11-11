@@ -1,9 +1,5 @@
 #pragma once
 
-// ActorFlags — bit indices into ActorDataFlagComponent::mFlags (std::bitset<0x77>).
-// The immobility predicate (sub_141ED7610) tests bit 16 = Noai (`flagsWord0 &
-// 0x10000`) on both of its paths; movement (sub_14CC50C20) then skips the
-// travel-vector update and sub_14CC31370 zeroes the velocity — the frozen state.
 enum class ActorFlags : int {
     Unknown = -1,
     Onfire = 0x0,

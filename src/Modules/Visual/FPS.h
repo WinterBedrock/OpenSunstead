@@ -2,7 +2,7 @@
 #include "../Module.h"
 #include "CounterStyle.h"
 
-// FPS HUD counter — the current framerate on a counter plate ("144 FPS").
+
 class FPS : public Module {
 public:
     FPS() : Module("FPS", "Displays the current framerate", Category::Visual, 0) {
@@ -16,7 +16,7 @@ public:
         AddSetting(new BoolSetting("Text Shadow", "Drop shadow behind the text", false));
         AddSetting(new NumberSetting("Shadow Opacity", "Opacity of the plate drop shadow", 0.35f, 0.0f, 1.0f, 0.05f));
         AddSetting(new BoolSetting("Gradient Numbers", "Draw the value in the theme gradient", true));
-        AddSetting(new BoolSetting("Number Animation", "Animate the value when it changes", true));
+        AddSetting(new BoolSetting("Number Animation", "Animate the value when it changes", false));
     }
 
     void OnRender() override;

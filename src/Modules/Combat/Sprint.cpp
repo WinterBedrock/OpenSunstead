@@ -8,28 +8,11 @@
 #include "../../Render/FrameView.h"
 #include "../../Utils/MiscUtils/ImRenderUtils.hpp"
 #include "../../Utils/MiscUtils/MathUtils.hpp"
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 #include <Windows.h>
 #include <atomic>
 #include <cmath>
 
-// Sprint — hold sprint ON while the player walks forward.
-//
-// The input system rebuilds MoveInputComponent from the real keyboard on every
-// ClientInputUpdateSystem::tick (Latite hooks the same function and writes
-// AFTER it). Writing from OnTick races that rebuild: the bit sticks on the
-// ticks where we win and vanishes on the ones where the rebuild wins, which is
-// the "sprints, then doesn't" flicker.
-//
-// The bit itself is the one Baritone already writes and the game's own
-// press/release lambdas index:
-//
-//     *(uint32_t*)(component + 4*(flag>>5) + 0x10) |= 1u << flag
-//
-// Flag 8 is sprint (Baritone::FlagSprint, "button.sprint"), so it is bit 8 of
-// the single dword at +0x10 — the second byte, mask 0x01. Latite's
-// rawInputState.sprintDown is that same bit. The earlier byte writes at +0x01
-// and +0x11 were the first two bytes of that dword's NEIGHBOURS, not the flag.
 
 // rawInputState.sprintDown: flag dword +0x10, bit 8.
 static constexpr uintptr_t kFlagDword   = 0x10;
@@ -69,10 +52,6 @@ static bool sehAssertSprint(SDK::Actor* lp) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// ---- post-input hook --------------------------------------------------------
-// Latite's signature, verified unique (1 match) on 1.26.51.01. The function
-// rebuilds the component from the keyboard and returns; we write afterwards,
-// so our bit is the last word until the next tick.
 
 using InputTickFn = void(__fastcall*)(
     void*, void*, void*, void*, void*, void*, void*, void*,
@@ -100,14 +79,12 @@ void Sprint::EnsureInputHook() {
         LOG_WARN("ClientInput tick not found — sprint falls back to OnTick writes", "Sprint");
         return;
     }
-    if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkInputTick),
-                      reinterpret_cast<LPVOID*>(&oInputTick)) != MH_OK
-        || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
+    if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkInputTick),
+                      reinterpret_cast<LPVOID*>(&oInputTick))) {
         LOG_ERROR("ClientInput tick hook failed", "Sprint");
         return;
     }
     s_hookInstalled = true;
-    LOG_INFO("ClientInput tick hooked (sprint writes after the input rebuild)", "Sprint");
 }
 
 bool Sprint::HookInstalled() { return s_hookInstalled; }
@@ -141,18 +118,8 @@ void Sprint::applySprintInput(SDK::Actor* lp) {
     if (want) sehAssertSprint(lp);
 }
 
-// ---- FOV effect -------------------------------------------------------------
-// The kick is applied by the shared SDK::sehApplyFovMod writer (renderLevel
-// hook, before the world render) from the PUBLISHED multiplier below. This
-// module only computes and publishes it — writing the LevelRendererPlayer
-// projection elements from here with a frozen base stomped the game's own FOV
-// animation and made world-to-screen overlays slide while moving (see
-// LevelRendererPlayer.h).
 static float s_fovMod = 1.f;                        // smoothed multiplier
 
-// Definition of the overlay sprint-FOV multiplier (declared in FrameView.h).
-// 1.0 = no kick. Written every applyFovEffect; read by the FrameTransform
-// producer (recorded per push) and acquireCameraMVP.
 volatile float g_sprintFovScale = 1.0f;
 
 void Sprint::applyFovEffect() {
@@ -179,9 +146,6 @@ void Sprint::applyFovEffect() {
     const float dt = ImRenderUtils::getDeltaTime();
     s_fovMod = MathUtils::lerp(s_fovMod, target, dt * 8.0f);
     if (std::abs(s_fovMod - target) < 0.005f) s_fovMod = target;
-    // Publish for the world render (sehApplyFovMod scales the LRP projection
-    // focal elements by zoom * sprint before the draw) and for the overlay
-    // projection (FrameView records the same value per push).
     g_sprintFovScale = s_fovMod;
 }
 
@@ -219,10 +183,6 @@ void Sprint::OnDisable() {
         SDK::Actor* lp = ci->getLocalPlayer();
         if (lp) sehWriteSprintBit(lp, false);
     }
-    // Give the game's FOV back if the effect was mid-flight: just drop the
-    // published multiplier to 1 — the shared SDK::sehApplyFovMod (renderLevel
-    // hook) divides out the scale it applied last frame on its next write, so
-    // the game's live animated base is restored with no manual pointer writes.
     s_fovMod = 1.f;
     g_sprintFovScale = 1.0f;
 }

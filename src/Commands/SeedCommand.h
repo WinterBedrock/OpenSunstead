@@ -49,10 +49,6 @@ public:
             return;
         }
 
-        // The seed is a SIGNED 64-bit value: Level::getSeed returns int64_t and
-        // negative worlds exist. Reading it as unsigned printed -2814821 as
-        // 18446744073706736795; keep the storage signed so the printed number
-        // matches what the game (and /locate math) actually uses.
         long long seed = 0;
         if (!sehCallGetSeed(level, &seed) || seed == -1) {
             CommandManager::GetInstance().PrintToChat("§cNo seed available for this world.");

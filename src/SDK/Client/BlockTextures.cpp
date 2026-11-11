@@ -39,7 +39,6 @@ std::string gameResourceDir() {
     return (p.parent_path() / "data" / "resource_packs").string();
 }
 
-// brarchive reader: name -> (blob index, offset, size), file in memory.
 struct Brarchive {
     // Every pack's blocks.brarchive merged: name -> (blob index, off, len).
     std::vector<std::vector<unsigned char>> blobs;
@@ -47,9 +46,6 @@ struct Brarchive {
     bool ok = false;
 };
 
-// keyPrefix is the folder the archive represents: flat "blocks.brarchive" keys
-// records bare ("stone.png"); a subfolder archive ("deepslate.brarchive") keys
-// them relative ("deepslate/deepslate_diamond_ore.png").
 bool loadBrarchive(const std::string& path, Brarchive& out, const std::string& keyPrefix) {
     FILE* f = nullptr;
     if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return false;
@@ -72,10 +68,6 @@ bool loadBrarchive(const std::string& path, Brarchive& out, const std::string& k
     out.blobs.push_back(std::move(data));
     const std::vector<unsigned char>& blob = out.blobs[blobIdx];
 
-    // The 0x100-byte record table comes FIRST (0x10 + count*0x100); the blobs
-    // follow it back to back. Verified against the vanilla blocks.brarchive:
-    // the blob walk lands exactly on EOF and every blob starts with a real
-    // image header.
     size_t pos = 0x10 + (size_t)count * 0x100;
     for (uint32_t i = 0; i < count; ++i) {
         const size_t rec = 0x10 + (size_t)i * 0x100;
@@ -148,12 +140,9 @@ std::string sanitizeJson(std::string s) {
     return out;
 }
 
-// The texture database.
 struct TextureDb {
     Brarchive archive;
-    // block id ("stone") -> { top texName, side texName }
     std::unordered_map<std::string, std::pair<std::string, std::string>> blocks;
-    // texture name -> "textures/blocks/xxx" path base ("xxx")
     std::unordered_map<std::string, std::string> terrainPaths;
     bool ok = false;
     bool tried = false;
@@ -164,7 +153,6 @@ TextureDb& db() {
     return instance;
 }
 
-// blocks.json "textures" value: either a plain string or a per-face object.
 void readFaceTextures(const nlohmann::json& tex, std::string& top, std::string& side) {
     if (tex.is_string()) {
         const std::string s = tex.get<std::string>();
@@ -187,10 +175,6 @@ void readFaceTextures(const nlohmann::json& tex, std::string& top, std::string& 
     side = !sd.empty() ? sd : (!north.empty() ? north : all);
 }
 
-// terrain_texture.json stores the path one level down. An entry is
-//   { "textures": <string | array of variants | {"path": "..."}> }
-// — arrays mix plain strings with {"path","overlay_color"} objects. Take the
-// first thing that names a file.
 std::string terrainPathOf(const nlohmann::json& entry) {
     const nlohmann::json* node = &entry;
     if (node->is_object()) {
@@ -236,9 +220,6 @@ void loadDb(TextureDb& t) {
     std::sort(overlays.begin(), overlays.end());
     packs.insert(packs.end(), overlays.begin(), overlays.end());
 
-    // Every pack ships block textures under __brarchive\textures: the flat
-    // blocks.brarchive plus one blocks/<folder>.brarchive per atlas subfolder.
-    // Load all with the matching key prefix (see loadBrarchive).
     for (const std::string& pk : packs) {
         const std::string texDir = pk + "\\__brarchive\\textures";
         std::vector<std::pair<std::string, std::string>> archives;   // (path, key prefix)
@@ -381,9 +362,6 @@ FaceTex* loadFace(const std::string& texName) {
     if (it != g.map.end()) return it->second.srv ? &it->second : nullptr;
 
     FaceTex ft;
-    // Candidate records: the exact base first ("deepslate/deepslate_diamond_ore"),
-    // then the bare file name; suffixes "", "_side", "_top"; extensions .png and
-    // .tga — the archive mixes both (grass_side is a .tga, stone a .png).
     std::array<std::string, 2> bases{ base, std::string() };
     const size_t sl = base.find_last_of('/');
     if (sl != std::string::npos && sl + 1 < base.size()) bases[1] = base.substr(sl + 1);

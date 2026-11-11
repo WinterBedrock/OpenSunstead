@@ -72,9 +72,6 @@ bool isAllDigits(const std::string& s) {
     return true;
 }
 
-// Extract the concatenation of every "text":"..." value from a rawtext JSON
-// envelope (TextObject packets). Handles simple escaping. Returns "" if the
-// input is not JSON.
 std::string extractRawtext(const std::string& in) {
     if (in.find("\"text\"") == std::string::npos) return "";
     std::string out;

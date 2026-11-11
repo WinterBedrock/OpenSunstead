@@ -1,7 +1,7 @@
 #include "AnyOffhand.h"
 #include "../../Memory/SigManager.h"
 #include "../../Core/Logger.h"
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 
 #include <cstdint>
 
@@ -44,27 +44,13 @@ void AnyOffhand::InstallHooks() {
 
     // Direct prologues only — no reloc/offset fields in these patterns.
     if (sig.Item_allowOffhandCheckA) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(sig.Item_allowOffhandCheckA),
-                &hkA, reinterpret_cast<LPVOID*>(&oA)) == MH_OK) {
-            MH_EnableHook(reinterpret_cast<LPVOID>(sig.Item_allowOffhandCheckA));
-            LOG_INFO("checkA hooked", "AnyOffhand");
-        } else {
-            LOG_ERROR("checkA hook failed", "AnyOffhand");
-        }
-    } else {
-        LOG_WARN("checkA sig missing", "AnyOffhand");
+        HookEngine::Create(reinterpret_cast<LPVOID>(sig.Item_allowOffhandCheckA),
+                &hkA, reinterpret_cast<LPVOID*>(&oA));
     }
 
     if (sig.Item_allowOffhandCheckB) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(sig.Item_allowOffhandCheckB),
-                &hkB, reinterpret_cast<LPVOID*>(&oB)) == MH_OK) {
-            MH_EnableHook(reinterpret_cast<LPVOID>(sig.Item_allowOffhandCheckB));
-            LOG_INFO("checkB hooked", "AnyOffhand");
-        } else {
-            LOG_ERROR("checkB hook failed", "AnyOffhand");
-        }
-    } else {
-        LOG_WARN("checkB sig missing", "AnyOffhand");
+        HookEngine::Create(reinterpret_cast<LPVOID>(sig.Item_allowOffhandCheckB),
+                &hkB, reinterpret_cast<LPVOID*>(&oB));
     }
 
     s_hooksInstalled = true;

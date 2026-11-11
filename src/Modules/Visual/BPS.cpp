@@ -9,7 +9,6 @@
 #include <cmath>
 #include <cstdio>
 
-// Reads the local player position safely (same known-good path as Coordinates).
 static bool getPlayerPosSafe(float out[3]) {
     out[0] = out[1] = out[2] = 0.0f;
     __try {
@@ -27,19 +26,15 @@ static bool getPlayerPosSafe(float out[3]) {
 
 void BPS::OnRender() {
     if (!IsEnabled()) return;
-    // Also visible while the HUD editor is open (it runs on the pause/chat screens).
     if (!HudEditor::HudVisible()) return;
 
-    // --- speed computation (horizontal blocks per second) ---
-    // The displayed number is refreshed on a fixed cadence so it stays
-    // readable instead of flickering every frame.
-    static double lastSampleTime = 0.0;   // last time we measured a delta
-    static double lastShowTime   = 0.0;   // last time we updated the readout
+    static double lastSampleTime = 0.0;
+    static double lastShowTime   = 0.0;
     static float  lastX = 0.0f, lastZ = 0.0f;
     static bool   havePrev = false;
-    static float  smoothBps = 0.0f;       // continuously smoothed speed
-    static float  shownBps  = 0.0f;       // value actually drawn
-    const double  kRefresh  = 0.25;       // seconds between readout updates
+    static float  smoothBps = 0.0f;
+    static float  shownBps  = 0.0f;
+    const double  kRefresh  = 0.25;
 
     float p[3];
     double now = ImGui::GetTime();
@@ -50,7 +45,7 @@ void BPS::OnRender() {
                 float dx = p[0] - lastX;
                 float dz = p[2] - lastZ;
                 float inst = (float)(std::sqrt(dx * dx + dz * dz) / dt);
-                smoothBps += (inst - smoothBps) * 0.15f;   // heavier smoothing
+                smoothBps += (inst - smoothBps) * 0.15f;
                 lastSampleTime = now; lastX = p[0]; lastZ = p[2];
             }
         } else {
@@ -58,7 +53,6 @@ void BPS::OnRender() {
             lastX = p[0]; lastZ = p[2];
         }
     }
-    // Only commit a new visible value every kRefresh seconds.
     if (now - lastShowTime >= kRefresh) {
         shownBps = smoothBps;
         lastShowTime = now;

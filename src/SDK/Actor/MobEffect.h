@@ -70,10 +70,8 @@ inline std::string effectDurationString(int durationTicks, bool infinite) {
 }
 
 inline constexpr uint32_t kMobEffectsComponentHash = 0xE6A1B550u;
-// Prefer Offsets().EffectInstance_size at runtime; this is the known fallback only.
-inline constexpr size_t   kMobEffectInstanceSize   = 0xA8;
+//inline constexpr size_t   kMobEffectInstanceSize   = 0xA8;
 
-// One active effect on an actor (from MobEffectsComponent vector).
 struct MobEffectData {
     uint32_t id = 0;
     int amplifier = 0;

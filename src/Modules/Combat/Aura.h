@@ -22,14 +22,8 @@ public:
         AddSetting(new BoolSetting("Randomize APS", "Randomize the attack interval per hit", true));               // [9]
         AddSetting(new NumberSetting("APS Min", "Minimum randomized attacks per second", 8.0f, 1.0f, 20.0f, 0.5f)); // [10]
         AddSetting(new NumberSetting("APS Max", "Maximum randomized attacks per second", 12.0f, 1.0f, 20.0f, 0.5f)); // [11]
-        // Hurt time: vanilla invulnerability frames last 10 ticks (500 ms) —
-        // hitting the same target faster than any player could is detectable
-        // and wastes the swings (Prax "Hurt Time").
         AddSetting(new BoolSetting("Hurt Time", "Respect the target's invulnerability frames", false));            // [12]
         AddSetting(new NumberSetting("Hurt Time Ms", "Minimum milliseconds between two hits on the same target", 500.0f, 0.0f, 1000.0f, 25.0f)); // [13]
-        // Interact: send the Interact(left-click) packet right before the
-        // attack transaction, like a real client's input pipeline does
-        // (Prax/Solstice "Interact").
         AddSetting(new BoolSetting("Interact", "Send an Interact packet before each attack", false));                // [14]
     }
 
@@ -66,11 +60,6 @@ private:
     unsigned long long mLastDebug = 0;
     // Randomized-APS interval for the CURRENT hit (re-drawn after every swing).
     unsigned long long mNextAttackAfterMs = 0;
-    // Last game tick (Actor::ticksExisted) on which we swung+attacked. OnUpdate
-    // runs on the camera/render update (per frame), so this hard-gates us to at
-    // most ONE attack per real server tick regardless of framerate — preventing
-    // multiple ItemUseOnEntity transactions landing in one PlayerAuthInput flush
-    // (the "Failed to decode batch packet / malformed packet" kick).
     long long mLastAttackTick = -1;
 
     // Full weapon-switch state: remember the player's original hotbar slot so
@@ -81,14 +70,6 @@ private:
     // Hurt-time bookkeeping: last successful attack (ms) per target entity id.
     std::map<unsigned int, unsigned long long> mLastHitPerTarget;
 
-    // ---- Target-visual animation state (Corner / Rings) -------------------
-    // mVisAlpha  — eased 0..1: fades IN when a target is acquired, OUT when it
-    //              is lost (the visual keeps drawing from its cached geometry
-    //              while fading).
-    // mVisTarget — the actor the visual currently tracks; on a CHANGE the
-    //              morph below blends the visual from the old anchor to the
-    //              new one instead of teleporting.
-    // mMorphT    — 0..1 switch-morph progress (0.22 s, eased in OnRender).
     float  mVisAlpha = 0.0f;
     void*  mVisTarget = nullptr;
     float  mMorphT = 1.0f;

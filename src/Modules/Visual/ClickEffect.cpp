@@ -43,7 +43,6 @@ void ClickEffect::spawnBurst(float mx, float my, float now) {
         p.born = now;
         p.life = life * (0.7f + frand() * 0.6f);
         if (rainbow) {
-            // pick a vivid random hue
             float h = frand() * 6.0f; float x = 1.0f - fabsf(fmodf(h, 2.0f) - 1.0f);
             if (h < 1) { p.r = 1; p.g = x; p.b = 0; }
             else if (h < 2) { p.r = x; p.g = 1; p.b = 0; }
@@ -59,16 +58,10 @@ void ClickEffect::spawnBurst(float mx, float my, float now) {
 }
 
 void ClickEffect::OnRender() {
-    // Render on every ScreenView EXCEPT the in-game HUD.
     if (SDK::isHudScreen()) { particles.clear(); return; }
 
     float now = nowSeconds();
 
-    // Edge-detect a left click and spawn a burst at the cursor. Only react when
-    // OUR process owns the foreground window: an earlier version used
-    // GetActiveWindow(), which returns the active window of the *calling
-    // thread's* message queue and is therefore almost always NULL on the
-    // render/hook thread, so no click ever registered.
     HWND fg = GetForegroundWindow();
     bool down = SDK::isGameWindowFocused() && ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
     if (down && !lastDown && fg) {
@@ -85,7 +78,7 @@ void ClickEffect::OnRender() {
         float t = (now - p.born) / p.life; // 0..1
         if (t >= 1.0f) { particles.erase(particles.begin() + i); continue; }
 
-        float ease = 1.0f - (1.0f - t) * (1.0f - t); // ease-out
+        float ease = 1.0f - (1.0f - t) * (1.0f - t);
         float px = p.x + p.vx * t;
         float py = p.y + p.vy * t;
         float rad = p.radius * (1.0f + ease * 0.8f);

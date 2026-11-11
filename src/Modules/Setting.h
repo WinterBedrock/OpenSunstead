@@ -16,12 +16,11 @@ public:
     std::string mDescription;
     SettingType mType;
 
-    // Animation states for UI
     float sliderEase = 0.0f;
     float boolScale = 0.0f;
     float enumSlide = 0.0f;
-    float enumSelAnim = 0.0f;  // animated selected-option index (sliding highlight)
-    float knobPulse = 0.0f;    // slider knob grab/change pulse (0..1)
+    float enumSelAnim = 0.0f;
+    float knobPulse = 0.0f;
     bool isDragging = false;
     bool enumExtended = false;
     bool mVisible = true;
@@ -30,7 +29,6 @@ public:
         : mName(std::move(name)), mDescription(std::move(desc)), mType(type) {}
 
     virtual ~Setting() = default;
-    // Restore the construction default (the flyout's "Reset settings" pill).
     virtual void ResetToDefault() {}
 };
 

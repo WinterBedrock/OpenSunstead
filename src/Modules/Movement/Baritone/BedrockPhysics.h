@@ -2,9 +2,6 @@
 #include <algorithm>
 #include <cmath>
 
-// Bedrock movement constants and small physics solvers. Positions and
-// velocities are blocks / blocks-per-tick; the live StateVector stays the
-// source of truth, these only predict takeoff and landing behaviour.
 namespace baritone::bedrock_physics {
 
 constexpr float gravity = 0.08f;
@@ -73,9 +70,6 @@ inline int ticksUntilLandingPlane(float y, float verticalVelocity, const float t
 
 inline bool holdJumpUntilAirborne(const bool jumpIssued, const bool wasAirborne,
                                    const bool grounded, const int launchUpdates) {
-    // updatePlayer can run several times per 20 Hz movement tick; keep Space
-    // down long enough for the native tick to consume it, bounded so a blocked
-    // jump cannot stay latched forever.
     return jumpIssued && !wasAirborne && grounded && launchUpdates <= 10;
 }
 

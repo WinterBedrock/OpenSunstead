@@ -1,135 +1,141 @@
 #include "Reach.h"
 #include "../../Memory/SigManager.h"
-#include "../Setting.h"
 #include "../../Core/Logger.h"
-#include <Windows.h>
+
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 
 namespace {
-struct Site { int dispOff; int endOff; };
-constexpr Site kSites[] = {{8, 12}, {18, 22}};
-uint8_t* g_anchor = nullptr;
-float* g_reachVal = nullptr;
-int32_t g_origDisp[2]{};
-bool g_patched = false;
 
-void* AllocNear(uint8_t* anchorPtr) {
-    SYSTEM_INFO si; GetSystemInfo(&si);
-    const uintptr_t gran = si.dwAllocationGranularity;
-    const uintptr_t base = reinterpret_cast<uintptr_t>(anchorPtr);
-    for (uintptr_t off = gran; off < 0x70000000ull; off += gran) {
-        const uintptr_t candidates[] = {base + off, base - off};
-        for (uintptr_t candidate : candidates) {
-            void* p = VirtualAlloc(reinterpret_cast<void*>(candidate & ~(gran - 1)), si.dwPageSize,
-                                   MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-            if (p) return p;
+struct LoadSite { size_t displacement; size_t instructionEnd; };
+constexpr std::array<LoadSite, 2> kLoadSites{{{8, 12}, {18, 22}}};
+
+uint8_t* capAnchor = nullptr;
+std::atomic<float>* reachValue = nullptr;
+std::array<int32_t, kLoadSites.size()> originalDisplacements{};
+bool patched = false;
+
+void* allocateNear(const uint8_t* anchor) {
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const uintptr_t granularity = info.dwAllocationGranularity;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(anchor);
+    for (uintptr_t distance = granularity; distance < 0x70000000ull; distance += granularity) {
+        const uintptr_t addresses[] = { base + distance, base - distance };
+        for (const uintptr_t address : addresses) {
+            void* page = VirtualAlloc(reinterpret_cast<void*>(address & ~(granularity - 1)),
+                info.dwPageSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            if (page) return page;
         }
     }
     return nullptr;
 }
 
-bool validateAnchors(uintptr_t capAnchor, uintptr_t registerAnchor) {
-    if (!capAnchor || registerAnchor <= capAnchor || registerAnchor - capAnchor >= 0x200) return false;
+float loadCap(const uint8_t* instruction, const LoadSite& site) {
+    int32_t displacement = 0;
+    std::memcpy(&displacement, instruction + site.displacement, sizeof(displacement));
+    float value = 0.f;
+    std::memcpy(&value, instruction + site.instructionEnd + displacement, sizeof(value));
+    return value;
+}
+
+bool validateSites(uintptr_t cap, uintptr_t clamp) {
+    if (!cap || clamp <= cap || clamp - cap > 0x400) return false;
     __try {
-        const auto* p = reinterpret_cast<const uint8_t*>(capAnchor);
-        const auto* clamp = reinterpret_cast<const uint8_t*>(registerAnchor);
-        const uint8_t load[] = {0xF3, 0x0F, 0x10, 0x3D};
-        const uint8_t minss[] = {0xF3, 0x44, 0x0F, 0x5D, 0xC7};
-        if (p[0] != 0x84 || p[1] != 0xC0 || p[2] != 0x75 || p[3] != 0x0A ||
-            p[12] != 0xEB || p[13] != 0x08 ||
-            std::memcmp(p + 4, load, sizeof(load)) != 0 ||
-            std::memcmp(p + 14, load, sizeof(load)) != 0 ||
-            clamp[0] != 0x84 || clamp[1] != 0xC0 || clamp[2] != 0x74 ||
-            std::memcmp(clamp + 4, minss, sizeof(minss)) != 0) return false;
-        const float expected[] = {3.0f, 7.0f};
-        for (size_t i = 0; i < 2; ++i) {
-            int32_t displacement;
-            std::memcpy(&displacement, p + kSites[i].dispOff, sizeof(displacement));
-            if (*reinterpret_cast<const float*>(p + kSites[i].endOff + displacement) != expected[i]) return false;
-        }
-        return true;
+        const auto* loads = reinterpret_cast<const uint8_t*>(cap);
+        constexpr uint8_t prefix[] = { 0x84, 0xC0, 0x75 };
+        constexpr uint8_t load[] = { 0xF3, 0x0F, 0x10, 0x3D };
+        constexpr uint8_t clampBytes[] = {
+            0x84, 0xC0, 0x74, 0x07, 0xF3, 0x44, 0x0F, 0x5D, 0xC7
+        };
+        if (std::memcmp(loads, prefix, sizeof(prefix)) != 0 ||
+            std::memcmp(loads + 4, load, sizeof(load)) != 0 ||
+            std::memcmp(loads + 14, load, sizeof(load)) != 0 ||
+            std::memcmp(reinterpret_cast<const void*>(clamp), clampBytes, sizeof(clampBytes)) != 0)
+            return false;
+        return loadCap(loads, kLoadSites[0]) == 3.f && loadCap(loads, kLoadSites[1]) == 7.f;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 bool writeDisplacement(size_t index, int32_t value) {
-    uint8_t* destination = g_anchor + kSites[index].dispOff;
-    DWORD oldProtection;
+    uint8_t* destination = capAnchor + kLoadSites[index].displacement;
+    DWORD oldProtection = 0;
     if (!VirtualProtect(destination, sizeof(value), PAGE_EXECUTE_READWRITE, &oldProtection)) return false;
-    std::memcpy(destination, &value, sizeof(value));
-    DWORD ignored;
-    VirtualProtect(destination, sizeof(value), oldProtection, &ignored);
+    std::atomic_ref(*reinterpret_cast<int32_t*>(destination)).store(value, std::memory_order_release);
     FlushInstructionCache(GetCurrentProcess(), destination, sizeof(value));
-    return true;
+    DWORD ignored = 0;
+    return VirtualProtect(destination, sizeof(value), oldProtection, &ignored) != FALSE;
 }
 
-bool restoreOperands() {
-    bool ok = true;
-    for (size_t i = 0; i < 2; ++i)
-        if (!writeDisplacement(i, g_origDisp[i])) ok = false;
-    if (ok) g_patched = false;
-    return ok;
+bool restore() {
+    bool restored = true;
+    for (size_t i = 0; i < originalDisplacements.size(); ++i)
+        restored = writeDisplacement(i, originalDisplacements[i]) && restored;
+    if (restored) patched = false;
+    return restored;
 }
+
 }
 
 void Reach::OnEnable() {
-    if (g_patched && !restoreOperands()) {
-        LOG_ERROR("Reach remains partially patched; enable aborted", "Reach");
+    if (patched) {
+        LOG_ERROR("Reach cannot re-enable over an existing code patch", "Reach");
         SetEnabled(false);
         return;
     }
-    auto& sig = SigManager::GetInstance();
-    const uintptr_t anchor = sig.ReachClampCapLoadAnchor12660;
-    if (!validateAnchors(anchor, sig.ReachClampRegisterAnchor12660)) {
-        LOG_WARN("Verified reach cap-load sites unavailable; disabling", "Reach");
+
+    auto& sigs = SigManager::GetInstance();
+    const uintptr_t anchor = sigs.ReachClampCapLoadAnchor12660;
+    if (!validateSites(anchor, sigs.ReachClampRegisterAnchor12660)) {
+        LOG_WARN("Reach range constants did not match the verified game path", "Reach");
         SetEnabled(false);
         return;
     }
-    g_anchor = reinterpret_cast<uint8_t*>(anchor);
-    if (!g_reachVal) g_reachVal = reinterpret_cast<float*>(AllocNear(g_anchor));
-    if (!g_reachVal) {
-        LOG_ERROR("AllocNear failed; disabling", "Reach");
+
+    auto* page = static_cast<std::atomic<float>*>(allocateNear(reinterpret_cast<uint8_t*>(anchor)));
+    if (!page) {
+        LOG_ERROR("Reach could not allocate nearby storage", "Reach");
         SetEnabled(false);
         return;
     }
-    *g_reachVal = GetReachDistance();
-    int32_t replacements[2];
-    for (size_t i = 0; i < 2; ++i) {
-        const intptr_t delta = reinterpret_cast<intptr_t>(g_reachVal) -
-                               reinterpret_cast<intptr_t>(g_anchor + kSites[i].endOff);
+    capAnchor = reinterpret_cast<uint8_t*>(anchor);
+    reachValue = page;
+    reachValue->store(GetReachDistance(), std::memory_order_release);
+
+    std::array<int32_t, kLoadSites.size()> replacements{};
+    for (size_t i = 0; i < replacements.size(); ++i) {
+        const intptr_t delta = reinterpret_cast<intptr_t>(reachValue) -
+            reinterpret_cast<intptr_t>(capAnchor + kLoadSites[i].instructionEnd);
         if (delta < std::numeric_limits<int32_t>::min() || delta > std::numeric_limits<int32_t>::max()) {
-            LOG_ERROR("Reach value outside RIP displacement range; disabling", "Reach");
             SetEnabled(false);
             return;
         }
         replacements[i] = static_cast<int32_t>(delta);
-        std::memcpy(&g_origDisp[i], g_anchor + kSites[i].dispOff, sizeof(int32_t));
+        std::memcpy(&originalDisplacements[i], capAnchor + kLoadSites[i].displacement, sizeof(int32_t));
     }
+
     size_t written = 0;
-    for (; written < 2; ++written)
+    for (; written < replacements.size(); ++written) {
         if (!writeDisplacement(written, replacements[written])) break;
-    if (written != 2) {
-        g_patched = written != 0;
-        if (g_patched && !restoreOperands()) LOG_ERROR("Reach rollback failed", "Reach");
-        LOG_ERROR("Reach patch transaction failed; disabling", "Reach");
-        SetEnabled(false);
-        return;
+        patched = true;
     }
-    g_patched = true;
-    LOG_INFO("Reach enabled with verified two-site cap loads", "Reach");
+    if (written != replacements.size()) {
+        if (patched && !restore()) LOG_ERROR("Reach patch rollback failed", "Reach");
+        SetEnabled(false);
+    }
 }
 
 void Reach::OnDisable() {
-    if (g_patched && !restoreOperands()) {
-        LOG_ERROR("Reach operands could not be fully restored", "Reach");
-        return;
-    }
-    LOG_INFO("Reach disabled; original caps restored", "Reach");
+    if (patched && !restore())
+        LOG_ERROR("Reach original range constants could not be restored", "Reach");
 }
 
 void Reach::OnRender() {
-    if (IsEnabled() && g_patched && g_reachVal) *g_reachVal = GetReachDistance();
+    if (patched && reachValue)
+        reachValue->store(GetReachDistance(), std::memory_order_release);
 }
 
 float Reach::GetReachDistance() const {

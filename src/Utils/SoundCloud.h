@@ -2,13 +2,6 @@
 #include <string>
 #include <vector>
 
-// Minimal SoundCloud api-v2 client (public endpoints, user-supplied client_id).
-//
-// Flow: search/tracks?q=..&client_id=..&limit=5 -> pick first streamable hit
-// with media.transcodings -> prefer a `progressive` transcoding (plain MP3
-// MCI can play; HLS playlists cannot) -> GET its url + client_id -> the real
-// stream URL. Artwork is fetched as raw bytes separately (JPEG).
-// All networking is synchronous WinHTTP; call off the game/render threads.
 namespace SoundCloud {
 
 struct Track {
@@ -34,9 +27,6 @@ Result searchFirst(const std::string& clientId, const std::string& query);
 // candidates instead of always taking the first one).
 Result searchRandom(const std::string& clientId, const std::string& query);
 
-// Random playable track from the SoundCloud charts ("wave"/trending).
-// Falls back to an error when charts are unreachable — caller should then
-// try searchRandom() with a preset query.
 Result chartsRandom(const std::string& clientId);
 
 // ---------------------------------------------------------------------------
@@ -72,10 +62,6 @@ UserInfo resolveUser(const std::string& clientId, const std::string& urlOrName);
 // Random playable track from a user's PUBLIC liked tracks (client_id only).
 Result userLikesRandom(const std::string& clientId, long long userId);
 
-// Stream a (https) URL straight to disk, following redirects.
-// Used for audio: MCI's mpegvideo cannot reliably open remote https
-// progressive streams, so we cache the MP3 locally and play the file.
-// Returns true on success (HTTP 200, non-empty file).
 bool downloadToFile(const std::string& url, const std::string& path);
 
 // Raw bytes of a (https) URL: artwork JPEGs. Empty vector on failure.

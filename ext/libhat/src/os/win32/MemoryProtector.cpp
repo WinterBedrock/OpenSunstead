@@ -1,8 +1,14 @@
-#include <libhat/Defines.hpp>
+#include <libhat/defines.hpp>
 #ifdef LIBHAT_WINDOWS
 
-#include <libhat/MemoryProtector.hpp>
+#include <libhat/memory_protector.hpp>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 
 namespace hat {
@@ -20,7 +26,7 @@ namespace hat {
         return PAGE_NOACCESS;
     }
 
-    memory_protector::memory_protector(const uintptr_t address, const size_t size, const protection flags) : address(address), size(size) {
+    memory_protector::memory_protector(const std::uintptr_t address, const std::size_t size, const protection flags) : address(address), size(size) {
         this->set = 0 != VirtualProtect(
             reinterpret_cast<LPVOID>(this->address),
             this->size,

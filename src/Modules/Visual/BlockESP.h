@@ -29,9 +29,6 @@ public:
         AddSetting(new BoolSetting("Fill", "Fill the box interior", true));                                      // [16]
         AddSetting(new NumberSetting("Fill Opacity", "Interior fill transparency", 0.20f, 0.0f, 1.0f, 0.01f));    // [17]
         AddSetting(new BoolSetting("Ancient Debris", "Show ancient debris", true));                             // [18]
-        // Merge: face-adjacent found blocks of the same kind are united into
-        // ONE shape (a single 2D rect / one hull contour) instead of a box per
-        // block — ore veins read as one blob.
         AddSetting(new BoolSetting("Merge", "Unite touching blocks of the same kind into one shape", true)); // [19]
         AddSetting(new BoolSetting("Shulker Boxes", "Show shulker boxes (all 17 color variants)", false));            // [20]
     }
@@ -52,12 +49,7 @@ private:
     int mRadius = 0;
     int mCursor = 0;
     mutable std::mutex mBlocksMutex;
-    // Published set the render thread reads. Only ever replaced atomically (swap)
-    // when a full scan pass completes, so ESP boxes stay stable instead of
-    // blinking as the progressive scan refills them.
     std::unordered_map<SDK::BlockPos, FoundBlock, SDK::BlockPosHash> mFoundBlocks;
-    // Scratch set the tick thread accumulates the in-progress pass into. Not
-    // touched by the render thread, so it needs no lock except at the swap.
     std::unordered_map<SDK::BlockPos, FoundBlock, SDK::BlockPosHash> mScanBuffer;
     std::unordered_map<void*, int> mLegacyKindCache;
 

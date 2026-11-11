@@ -2,21 +2,6 @@
 #include "../Module.h"
 #include <cstdint>
 
-// AutoClicker — simulated combat clicks.
-//
-// LEFT mode drives the game's combat primitives directly (never touches the
-// system mouse), exactly like TriggerBot:
-//
-//   * crosshair on an ENTITY -> Actor::swing(Attack) + GameMode::attack(target)
-//   * crosshair on air/block -> Actor::swing(Attack) only, which is the vanilla
-//     "missed swing" (the server sees the arm-swing animation and, when the
-//     option is on, the MISSED_SWING AuthInput flag)
-//
-// RIGHT mode injects REAL right mouse clicks (SendInput RMB down/up) so the
-// game's own input path performs the use — indistinguishable from a physical
-// click, which is the point (bridging/place spam reads as a human clicking).
-// The press is released on a later frame so the game's input poll cannot miss
-// it, and only while the in-game HUD is up.
 class AutoClicker : public Module {
 public:
     AutoClicker() : Module("AutoClicker", "Automatically clicks for you", Category::Combat, 0) {

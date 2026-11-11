@@ -15,9 +15,6 @@ public:
 
     void OnContainerFrame(void* csc, const std::string& screenName);
 
-    // Substring test over the raw screen id ("chest_screen", "large_chest",
-    // "barrel", …). Public because ChestAura needs the same answer to tell
-    // whether the container it just interacted with actually opened.
     static bool IsContainerScreen(const std::string& sn);
 
 private:
@@ -38,16 +35,8 @@ private:
     // Consecutive "container looks empty" observations before we exit, so a
     // mid-transaction gap does not close the chest early.
     int mEmptyTicks = 0;
-    // Latched once the container is cleared. Without this the module kept
-    // re-scanning all 27 slots (54 native calls) and re-logging "done" every
-    // 50 ms for as long as the chest stayed open — that was the looting stutter.
     bool mFinished = false;
 
-    // Close countdown: the game rejects a ContainerClose that happens before
-    // the server has acknowledged the last ItemStackRequest, so when
-    // Close When Done is on we do NOT immediately tryExit — we wait out
-    // mCloseAfterMs, then exit. This is the verbose fix for "server cancels /
-    // desyncs on the last slots".
     uint64_t mCloseAfterMs = 0;
 
     // Progress for UI / debug

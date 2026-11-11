@@ -1,12 +1,3 @@
-// Camera transform capture — the world-to-screen source for ESP/Tracers.
-//
-// Producer: hkCameraWriteMatrices pushes transforms into the ring (records the
-// swapchain backbuffer index at push time). Consumer: GameHooks::BeginPresentFrame
-// (Present hook) serves the push that rendered the buffer being presented.
-// Full timing rationale lives in Render/FrameView.h.
-//
-// This TU also owns the FrameView camera-queue globals (FrameView.h is
-// header-only) and the served-transform accessors RenderPos.h declares.
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
@@ -17,7 +8,7 @@
 #include "../Memory/OffsetManager.h"
 #include "../Memory/SigManager.h"
 #include "../Core/Logger.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <atomic>
 #include <cmath>
 
@@ -54,8 +45,6 @@ namespace {
     typedef void(__fastcall* CameraSetup_writeMatrices_t)(void* cam, void* a2);
     CameraSetup_writeMatrices_t oCameraWriteMatrices = nullptr;
 
-    // Raw game reads go through this SEH helper: the world can be tearing down
-    // while the render thread walks these pointers.
     static bool sehCaptureCameraTransform(void* camThis) {
         void* ci = nullptr;
         {
@@ -81,7 +70,7 @@ namespace {
             if (!fn || !sdk_safe_ptr(fn, 16)) return false;
             mat = ((void*(__fastcall*)(void*))fn)(ci);
 
-            // Timer::alpha is the third float in Timer.
+            // Timer::alpha 3rd float
             uintptr_t mc = *(uintptr_t*)((uintptr_t)ci + Offsets().CI_Minecraft);
             if (mc && sdk_safe_ptr((void*)mc, 0x100)) {
                 uintptr_t tm = *(uintptr_t*)(mc + Offsets().MC_Timer);
@@ -130,8 +119,7 @@ namespace {
             }
         }
 
-        // Fallback: the LRP's own copies (carry module FOV scaling; Present
-        // rescales by the live/captured ratio for these pushes).
+        // todo
         float view[16], proj[16];
         if (SDK::sehReadLrpMatrices(view, proj)) {
             return pushCameraTransform(view, proj, origin, timerAlpha,
@@ -142,9 +130,6 @@ namespace {
         return false;
     }
 
-    // Actor pair snapshot AT PUSH TIME (see RenderPos.h PushPairRing for why
-    // the pair must be sampled at push time). Runs outside any __try so C++
-    // containers are legal; raw game access stays inside POD SEH helpers.
     static void capturePushActorPairs() {
         SDK::GameContext ctx;
         if (!SDK::resolveContext(ctx, /*needLevel=*/true)) return;
@@ -170,8 +155,7 @@ namespace {
             }
     }
 
-    // Capture view*proj + origin during the CURRENT frame's world render;
-    // overlays read g_frameView at Present time.
+    // capture view*proj + origin during current frames world render, overlays read g_frameView at Present time
     static bool captureFrameViewImpl() {
         __try {
             SDK::ClientInstance* ci = SDK::ClientInstance::get();
@@ -205,9 +189,8 @@ namespace {
 void InstallCameraHooks() {
     uintptr_t camAddr = SigManager::GetInstance().CameraSetup_writeMatrices;
     if (camAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(camAddr), &hkCameraWriteMatrices,
-                reinterpret_cast<LPVOID*>(&oCameraWriteMatrices)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(camAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(camAddr), &hkCameraWriteMatrices,
+                reinterpret_cast<LPVOID*>(&oCameraWriteMatrices))) {
             LOG_INFO("CameraSetup::writeMatrices hooked (world-to-screen source)", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook CameraSetup::writeMatrices", "GameHooks");
@@ -217,8 +200,6 @@ void InstallCameraHooks() {
     }
 }
 
-// Called from the DX Present hook AFTER the world render wrote this frame's
-// lastViewMatrix — a renderLevel-time read would grab the previous frame.
 void GameHooks::CaptureFrameViewNow() {
     captureFrameViewImpl();
 }
@@ -226,7 +207,6 @@ void GameHooks::CaptureFrameViewNow() {
 void GameHooks::BeginPresentFrame(unsigned bbNow) {
     g_presentSeq = g_presentSeq + 1;
     drainCameraQueue(bbNow);
-    // Present marks the frame boundary: re-arm the camera push dedup.
     g_pushedThisFrame = 0;
     g_camCallsThisFrame = 0;
     g_camRawCallsThisFrame = 0;

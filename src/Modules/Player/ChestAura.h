@@ -64,10 +64,6 @@ private:
         return setting;
     }
 
-    // --- Runtime state ------------------------------------------------------
-    // Containers we already opened, so the module does not reopen the same one
-    // the moment the screen closes. Cleared on dimension-scale position jumps
-    // and by the Forget After timer.
     std::unordered_set<SDK::BlockPos, SDK::BlockPosHash> mVisited;
     uint64_t  mVisitedStampMs = 0;
     long long mLastTick   = -1;

@@ -21,11 +21,7 @@ namespace GameIcon {
 
 namespace {
 
-// MinecraftUIRenderContext vtable (0x14E9948B0 on 1.26.50.04):
-//   [9]  flushImages   [14] drawRectangle   [15] fillRectangle
-// fillRectangle(this, RectangleArea const& {x0,x1,y0,y1}, mce::Color const&, float alpha)
 constexpr int kFillRectSlot = 15;
-// First bytes of fillRectangle (sub_146635CD0) — checked before every use.
 const unsigned char kFillProlog[] = { 0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x83, 0xEC, 0x68, 0x0F, 0x29, 0x74, 0x24, 0x50, 0x0F, 0x28 };
 
 constexpr int kIcon = 64;         // icon edge in screen pixels (16 * 4)
@@ -152,8 +148,6 @@ void onUiRender(void* mcuirc, const std::string& screenName) {
     const float frac = uiFrac();
     if (gd->getHeight() < kCell + 8 || gd->getWidth() < 2 * kCell + 8) return;
 
-    // Top-left scratch cells, pixel aligned (independent of window height, so
-    // GuiData and back buffer agree even if their heights ever differ).
     const int px = 2;
     const int py = 2;
 

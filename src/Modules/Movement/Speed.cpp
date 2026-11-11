@@ -5,22 +5,7 @@
 #include <cmath>
 #include <Windows.h>
 
-// Vanilla-style movement: rebuild the horizontal velocity from the player's YAW
-// + live WASD input each tick, matching the game's own move solver (ported from
-// its MathUtils::getMotion + getRotationKeyOffset). This replaces the old
-// "rescale the existing velocity" logic, which lagged the input direction and
-// never felt vanilla.
-//
-// BASE ground speed comes from the player's RAW movement-speed attribute
-// (Actor::getMovementSpeed) so Speed/Slowness effects scale naturally. Vanilla
-// base attribute is ~0.10, which corresponds to a sprint-ground speed of
-// ~0.2873 blocks/tick, giving an attr->ground factor of ~2.873. If the
-// attribute read is unavailable (unverified id, etc.) we fall back to that
-// proven ground-speed constant so movement never breaks.
 void Speed::tickVanilla(SDK::Actor* lp) {
-    // Live WASD. Project convention: hardcoded keys (see InventoryMove /
-    // Keystrokes), which ignores custom keybinds but matches the rest of the
-    // codebase.
     bool w = (GetAsyncKeyState('W') & 0x8000) != 0;
     bool a = (GetAsyncKeyState('A') & 0x8000) != 0;
     bool s = (GetAsyncKeyState('S') & 0x8000) != 0;
@@ -64,10 +49,6 @@ void Speed::tickVanilla(SDK::Actor* lp) {
     }
     float target = ground * mult;
 
-    // Rebuild horizontal velocity in the input direction. cos(yaw+off+90) ==
-    // -sin(yaw+off), sin(yaw+off+90) == cos(yaw+off): the same forward-vector
-    // convention this codebase already uses in Scaffold. Vertical velocity (y)
-    // is left untouched so jumping/falling stays vanilla.
     const float D2R = 0.01745329252f;
     float ang = (yaw + off + 90.0f) * D2R;
     stateVec->velocity.x = std::cos(ang) * target;
@@ -262,9 +243,6 @@ void Speed::tickCustom(SDK::Actor* lp) {
 
 void Speed::OnTick() {
     if (!IsEnabled()) return;
-    // WASD must only be read from the HUD screen — while the chat (or any
-    // other screen) is open the same keys are TEXT INPUT and must never drive
-    // movement.
     if (!SDK::isGameplayInputActive()) return;
 
     SDK::ClientInstance* cInst = SDK::ClientInstance::get();
@@ -274,9 +252,6 @@ void Speed::OnTick() {
 
     int type = static_cast<EnumSetting*>(mSettings[0])->mValue;
 
-    // Knockback boost (Apollo DamageBoost, packet-free): a sudden horizontal
-    // velocity gain while airborne is the knockback signature — ride it for
-    // ~590 ms like Apollo's DamageBoost window.
     mBoostMult = 1.0f;
     if (GetDamageBoost()) {
         auto* sv = lp->getStateVector();
@@ -318,15 +293,6 @@ void Speed::OnTick() {
     }
 }
 
-// Bypass mode: stay inside the displacement band that vanilla-accelerated
-// movement can produce, so servers whose speed-check compares measured
-// per-tick displacement against the predicted maximum stay satisfied.
-//   * multiplier hard-capped at 1.6 (a sprint-jumping player already measures
-//     ~1.3x on the ground band; 1.6 leaves headroom without standing out),
-//   * the boost is applied ONLY while airborne (jump-ticks), ground ticks run
-//     vanilla speed — the classic "hop speed" profile anticheats tolerate,
-//   * auto-hop while moving to stay in the airborne band,
-//   * sprint flags asserted so the server's own prediction sprints with us.
 void Speed::tickBypass(SDK::Actor* lp) {
     bool w = (GetAsyncKeyState('W') & 0x8000) != 0;
     bool a = (GetAsyncKeyState('A') & 0x8000) != 0;
@@ -352,10 +318,6 @@ void Speed::tickBypass(SDK::Actor* lp) {
     if (mult < 1.0f) mult = 1.0f;
 
     const bool airborne = !onGround;
-    // Ground ticks stay ~vanilla: the server predicts a ground walk there (the
-    // jump-sync bits below only fire on the hop), so this is where overspeed
-    // actually gets flagged. The multiplier itself lives on AIR ticks, inside
-    // the jump-arc band the predicted motion tolerates.
     const float base = airborne ? 0.2873f   // vanilla sprint-jump air speed
                                 : 0.2195f;  // vanilla walk-ground speed
     float eff = mult;

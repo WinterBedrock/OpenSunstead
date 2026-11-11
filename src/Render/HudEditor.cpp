@@ -20,10 +20,6 @@ namespace {
 Module* g_dragging = nullptr;
 ImVec2 g_dragOffset{ 0.0f, 0.0f };
 
-// The drag screens are exactly the ones where the game has already released
-// the cursor. On hud_screen the cursor is grabbed for camera control — EXCEPT
-// while the custom Chat menu is open (its WndProc branch blocks the keys from
-// the game and releases the cursor), which makes it a drag surface too.
 bool onEditableScreen() {
     const std::string& sn = SDK::ScreenView::currentScreenName();
     if (sn == "pause_screen" || sn == "chat_screen") return true;
@@ -34,27 +30,17 @@ std::vector<Module*> hudModules() {
     std::vector<Module*> out;
     for (Module* mod : ModuleManager::GetInstance().GetModules()) {
         if (!mod || !mod->mIsHudModule || !mod->IsEnabled()) continue;
-        // Bounds come from the element's own last draw. Some report nothing when
-        // they have nothing to show (the ArrayList with no enabled modules zeroes
-        // its size), and a zero-area box is neither visible nor grabbable.
         if (mod->mWidth < 4.0f || mod->mHeight < 4.0f) continue;
         out.push_back(mod);
     }
     return out;
 }
 
-// Reset-Positions button state. The button is shown while a drag is active (or
-// within its linger window) and clicked applies an OnFirstLayout pass over
-// every HUD module at its module-provided default.
 struct ResetButton {
     float anim = 0.0f;              // 0..1 visibility
     unsigned long long lingerUntil = 0; // ms; button stays while dragging +3s after
     bool wasDragging = false;
 
-    // Reset every HUD module to its module-provided default position.
-    // Each module restores its own construction-time position and recomputes
-    // screen-dependent defaults (Scaffold's "near center", Player's bottom
-    // center); mScale is reset to 1.0.
     static void resetPositions() {
         ImVec2 screen = ImGui::GetIO().DisplaySize;
         for (Module* mod : ModuleManager::GetInstance().GetModules()) {
@@ -132,9 +118,6 @@ void OnRender() {
 
     const std::vector<Module*> mods = hudModules();
 
-    // Grab detection — no hover chrome: the old hover frames read as leftover
-    // editor clutter; an element simply follows the cursor once grabbed (with
-    // a tiny name tag so you see what you are moving).
     Module* hovered = nullptr;
     if (!g_dragging) {
         for (Module* mod : mods) {
@@ -144,9 +127,6 @@ void OnRender() {
         }
     }
 
-    // A module that owns this frame's left click (the Player's prev/pause/next
-    // buttons, its progress bar) has already consumed it — grabbing the panel
-    // here would yank it out from under the button press.
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         !hovered->mClickConsumed) {
         g_dragging = hovered;
@@ -167,9 +147,6 @@ void OnRender() {
             g_dragging = nullptr;
         } else {
             draggingNow = true;
-            // Animated drag: the element eases toward the cursor (and into the
-            // edge/centre snaps) instead of hard-teleporting — repositioning
-            // feels like moving a physical card, not dragging a debug rect.
             float nx = mouse.x - g_dragOffset.x;
             float ny = mouse.y - g_dragOffset.y;
             const float snap = 10.0f;
@@ -189,11 +166,6 @@ void OnRender() {
     // Reset-Positions button: driven off draggingNow (or its 3 s linger).
     g_resetBtn.frame(draggingNow);
 
-    // Scroll over a hovered element to resize it (kept from the editor) —
-    // EXCEPT the Chat panel: its size is owned by the module's settings and
-    // the wheel scrolls the message history there.
-    // Range is [0.5, 6.0]: the old 2.5 ceiling sat right on Watermark's 2.4
-    // default, so the watermark started AT the max and could only shrink.
     if (hovered) {
         const float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f && hovered->GetName() != "Chat")

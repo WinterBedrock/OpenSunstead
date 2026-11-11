@@ -3,12 +3,12 @@
 #include "../../Core/Logger.h"
 #include "../../Memory/SigManager.h"
 #include "../../SDK/Client/ClientInstance.h"
-
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <climits>
 
 static constexpr ptrdiff_t kSwingProgress = 0x42C; // float, 0..1
 static constexpr ptrdiff_t kSwingFlag     = 0x45D; // byte, 1 while swinging
@@ -25,8 +25,6 @@ bool  g_durHooked  = false;
 bool  g_enabled    = false;
 int   g_style      = 0;
 float g_speed      = 1.0f;
-
-float g_angleScale = 1.0f;
 
 uint8_t g_prevSwingFlag = 0;
 
@@ -122,9 +120,8 @@ void InstallDurationHook() {
         return;
     }
 
-    if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkSwingDuration),
-                      reinterpret_cast<LPVOID*>(&oSwingDuration)) != MH_OK
-        || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
+    if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkSwingDuration),
+                      reinterpret_cast<LPVOID*>(&oSwingDuration))) {
         LOG_ERROR("getCurrentSwingDuration hook failed", "Swing");
         return;
     }
@@ -143,10 +140,8 @@ bool Swing::InstallHook() {
         return false;
     }
 
-    if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkNormalTick),
-                      reinterpret_cast<LPVOID*>(&oNormalTick)) != MH_OK
-        || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
-        MH_RemoveHook(reinterpret_cast<LPVOID>(fn));
+    if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkNormalTick),
+                      reinterpret_cast<LPVOID*>(&oNormalTick))) {
         oNormalTick = nullptr;
         LOG_ERROR("normalTick hook failed", "Swing");
         return false;
@@ -164,17 +159,30 @@ void Swing::InstallHooks() {
     InstallSwingRotateHook();
 }
 
-static constexpr ptrdiff_t kSwingCallAt    = 62;
-static constexpr ptrdiff_t kSwingRotateRet = kSwingCallAt + 5;
+// ---------------------------------------------------------------------------
+// Custom Angle — direct code patch.
+//
+// The swing rotation site (pinned byte-for-byte by the ItemInHand_swingAngleLoad
+// signature) computes:  angle = progress * [-20.0] * deg2rad, then calls
+// Matrix::rotateAxisAngle. The first multiply is `mulss xmm9, [rip+disp32]`
+// (opcode bytes are part of the signature, only the displacement is wild).
+// The -20.0 constant it points at is shared by 24 other code sites, so instead
+// of touching the constant we rewrite the displacement to aim at a 4-byte
+// writable slot we allocate near the game image. Vanilla keeps -20.0 in the
+// slot; Custom Angle swaps in the user's angle. No hooks, no trampolines and no
+// return-address matching — the previous detour-based approach silently
+// depended on the shared Matrix::rotateAxisAngle hook matching a return site.
+// ---------------------------------------------------------------------------
+namespace {
 
-bool sehReadU8(const void* p, uint8_t* out) {
-    __try {
-        *out = *reinterpret_cast<const uint8_t*>(p);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
+constexpr ptrdiff_t kMulssAt  = 5;   // F3 44 0F 59 0D <disp32> begins at sig+5
+constexpr ptrdiff_t kDispAt    = kMulssAt + 5;
+constexpr ptrdiff_t kInstrEnd  = kDispAt + 4;
+
+float*    g_angleSlot      = nullptr;  // writable 4-byte slot near the image
+uintptr_t g_angleDispAt    = 0;        // VA of the disp32 inside the mulss
+int32_t   g_angleOrigDisp  = 0;        // original value, restored on unload
+bool      g_anglePatched   = false;
 
 bool sehReadI32(const void* p, int32_t* out) {
     __try {
@@ -185,50 +193,123 @@ bool sehReadI32(const void* p, int32_t* out) {
     }
 }
 
-uintptr_t Swing::SwingRotateReturn() {
-    const uintptr_t match = SigManager::GetInstance().ItemInHand_swingAngleLoad;
-    return match ? match + kSwingRotateRet : 0;
+// Any committed page within +-2GB of `near' works; rel32 displacements must
+// stay in int32 range. The slot is intentionally never freed: after the client
+// unloads, the patched instruction still dereferences it, so it must outlive
+// us and keep holding the vanilla value.
+float* allocAngleSlotNear(uintptr_t nearVA) {
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    constexpr uint64_t kStep = 0x10000;
+    for (uint64_t off = kStep; off < 0x70000000ULL; off += kStep) {
+        for (int dir = 0; dir < 2; ++dir) {
+            const uint64_t addr = dir ? (nearVA + off) : (nearVA - off);
+            if (addr < 0x10000) continue;
+            void* p = VirtualAlloc(reinterpret_cast<void*>(addr & ~(kStep - 1)),
+                                   si.dwPageSize, MEM_COMMIT | MEM_RESERVE,
+                                   PAGE_READWRITE);
+            if (p) return static_cast<float*>(p);
+        }
+    }
+    return nullptr;
 }
 
-// The swing arc is one `call rel32` inside ItemInHandRenderer::render. Decode
-// that call so the hook lands on the function the renderer actually uses the client's Matrix::rotateAxisAngle signature resolves a different helper
-// on this build, and hooking it changes nothing here.
-uintptr_t Swing::SwingRotateFn() {
-    const uintptr_t match = SigManager::GetInstance().ItemInHand_swingAngleLoad;
-    if (!match) return 0;
-    const uintptr_t call = match + kSwingCallAt;
-    uint8_t op = 0;
-    if (!sehReadU8(reinterpret_cast<const void*>(call), &op) || op != 0xE8) return 0;
-    int32_t rel = 0;
-    if (!sehReadI32(reinterpret_cast<const void*>(call + 1), &rel)) return 0;
-    return call + 5 + static_cast<intptr_t>(rel);
+void applyAngleSlot(float degrees) {
+    if (g_angleSlot) *g_angleSlot = degrees;  // aligned dword store: atomic
 }
 
-float Swing::SwingAngleScale() { return g_angleScale; }
-
-// swings rotate call
-void InstallSwingRotateHook() {}
+} // namespace
 
 // vanilla sweeps -20 degrees
 static constexpr float kVanillaSwingDegrees = -20.0f;
+
+float Swing::CustomAngleDegrees() {
+    return (g_enabled && CustomAngle()) ? Angle() : kVanillaSwingDegrees;
+}
+
+// swings rotate site patch
+void InstallSwingRotateHook() {
+    if (g_anglePatched) return;
+
+    const uintptr_t match = SigManager::GetInstance().ItemInHand_swingAngleLoad;
+    if (!match) {
+        LOG_WARN("Swing rotation site not found — Custom Angle unavailable", "Swing");
+        return;
+    }
+
+    const uintptr_t dispAt = match + kDispAt;
+    int32_t orig = 0;
+    if (!sehReadI32(reinterpret_cast<const void*>(dispAt), &orig)) {
+        LOG_WARN("Swing rotation site unreadable — Custom Angle unavailable", "Swing");
+        return;
+    }
+
+    float* slot = allocAngleSlotNear(match);
+    if (!slot) {
+        LOG_WARN("Could not allocate an angle slot near the game image", "Swing");
+        return;
+    }
+    *slot = kVanillaSwingDegrees;
+
+    const int64_t delta = reinterpret_cast<int64_t>(slot) -
+                          static_cast<int64_t>(match + kInstrEnd);
+    if (delta < INT32_MIN || delta > INT32_MAX) {
+        VirtualFree(slot, 0, MEM_RELEASE);
+        LOG_WARN("Angle slot out of rel32 range — Custom Angle unavailable", "Swing");
+        return;
+    }
+
+    DWORD oldProt = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(dispAt), sizeof(int32_t),
+                        PAGE_EXECUTE_READWRITE, &oldProt)) {
+        VirtualFree(slot, 0, MEM_RELEASE);
+        LOG_WARN("Swing site is not writable — Custom Angle unavailable", "Swing");
+        return;
+    }
+    *reinterpret_cast<int32_t*>(dispAt) = static_cast<int32_t>(delta);
+    VirtualProtect(reinterpret_cast<void*>(dispAt), sizeof(int32_t), oldProt, &oldProt);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(dispAt), sizeof(int32_t));
+
+    g_angleSlot     = slot;
+    g_angleDispAt   = dispAt;
+    g_angleOrigDisp = orig;
+    g_anglePatched  = true;
+    LOG_INFO("Swing angle patch installed (slot at follows-sig displacement)", "Swing");
+}
+
+void Swing::RestoreAnglePatch() {
+    if (!g_anglePatched) return;
+    DWORD oldProt = 0;
+    if (VirtualProtect(reinterpret_cast<void*>(g_angleDispAt), sizeof(int32_t),
+                       PAGE_EXECUTE_READWRITE, &oldProt)) {
+        *reinterpret_cast<int32_t*>(g_angleDispAt) = g_angleOrigDisp;
+        VirtualProtect(reinterpret_cast<void*>(g_angleDispAt), sizeof(int32_t), oldProt, &oldProt);
+        FlushInstructionCache(GetCurrentProcess(),
+                              reinterpret_cast<void*>(g_angleDispAt), sizeof(int32_t));
+    }
+    // Keep g_angleSlot allocated and leave it at the vanilla value: the
+    // process may outlive this DLL (eject). Only mark the code as restored.
+    g_anglePatched = false;
+}
 
 void Swing::OnEnable() {
     g_enabled = true;
     g_prevSwingFlag = 0;
     InstallHook();
     InstallSwingRotateHook();
+    if (g_anglePatched) applyAngleSlot(CustomAngleDegrees());
 }
 
 void Swing::OnDisable() {
     g_enabled = false;
     g_prevSwingFlag = 0;
-    g_angleScale = 1.0f;
+    if (g_anglePatched) applyAngleSlot(kVanillaSwingDegrees);
 }
 
 void Swing::OnTick() {
     g_style = Style();
     g_speed = Speed();
-    g_angleScale = (g_enabled && CustomAngle()) ? (Angle() / kVanillaSwingDegrees) : 1.0f;
+    if (g_anglePatched) applyAngleSlot(CustomAngleDegrees());
 }
 
 void Swing::UpdateSettingsVisibility() {

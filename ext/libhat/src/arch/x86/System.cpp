@@ -1,7 +1,7 @@
-#include <libhat/Defines.hpp>
+#include <libhat/defines.hpp>
 #if defined(LIBHAT_X86) || defined(LIBHAT_X86_64)
 
-#include <libhat/System.hpp>
+#include <libhat/system.hpp>
 
 #include <array>
 #include <cstdint>
@@ -46,6 +46,11 @@ namespace hat {
     }
     #endif
 
+    LIBHAT_TARGET("xsave")
+    static auto xgetbv_impl(unsigned int a) {
+        return _xgetbv(a);
+    }
+
     system_info_x86::system_info_x86() {
         std::array<int, 4> info{};
         std::vector<std::array<int, 4>> data{};
@@ -77,11 +82,11 @@ namespace hat {
         std::bitset<32> f_1_EDX_{};
         std::bitset<32> f_7_EBX_{};
         if (nIds >= 1) {
-            f_1_ECX_ = (uint32_t) data[1][2];
-            f_1_EDX_ = (uint32_t) data[1][3];
+            f_1_ECX_ = static_cast<std::uint32_t>(data[1][2]);
+            f_1_EDX_ = static_cast<std::uint32_t>(data[1][3]);
         }
         if (nIds >= 7) {
-            f_7_EBX_ = (uint32_t) data[7][1];
+            f_7_EBX_ = static_cast<std::uint32_t>(data[7][1]);
         }
 
         // Read extended info
@@ -99,7 +104,7 @@ namespace hat {
         bool osxsave = f_1_ECX_[27];
         if (xsave && osxsave) {
             // https://cdrdv2-public.intel.com/671190/253668-sdm-vol-3a.pdf (Page 2-20)
-            const std::bitset<64> xcr = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
+            const std::bitset<64> xcr = xgetbv_impl(_XCR_XFEATURE_ENABLED_MASK);
             avxsupport = xcr[1] && xcr[2]; // xmm and ymm
             avx512support = avxsupport && xcr[5] && xcr[6] && xcr[7]; // opmask and zmm
         }

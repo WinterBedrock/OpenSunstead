@@ -4,7 +4,6 @@
 #include "../../SDK/SDK.h"
 #include "../../SDK/Network/Packet.h"
 #include "../Setting.h"
-#include "../../Core/Logger.h"
 #include <imgui.h>
 #include <Windows.h>
 #include "../../SDK/Network/PacketUtils.h"
@@ -30,7 +29,7 @@ bool Blink::ConsumeFrost(SDK::Packet* packet, int id) {
         q.time = GetTickCount64();
         mQueue.push_back(q);
     }
-    return true;   // freeze,never call the games sender
+    return true;   // freeze, never call the game's sender
 }
 
 void Blink::OnTick() {
@@ -42,10 +41,7 @@ void Blink::DrainTick() {
     bool flushEnabled = static_cast<BoolSetting*>(mSettings[3])->mValue;
     float rateLimit = static_cast<NumberSetting*>(mSettings[4])->mValue;
     if (!flushEnabled) {
-        if (!mQueue.empty()) {
-            LOG_INFO("Blink dropped " + std::to_string((int)mQueue.size()) + " stored packets", "Blink");
-            mQueue.clear();
-        }
+        mQueue.clear();
         return;
     }
     unsigned long long now = GetTickCount64();
@@ -61,18 +57,11 @@ void Blink::DrainTick() {
         mLastFlushMs = now;
         ++sent;
     }
-    if (mQueue.empty() && sent > 0)
-        LOG_INFO("Blink finished draining stored packets", "Blink");
 }
 
 void Blink::OnDisable() {
-    // someday ill get around to finishing this completely? right??
     bool flush = static_cast<BoolSetting*>(mSettings[3])->mValue;
-    if (!flush) {
-        mQueue.clear();
-    } else if (!mQueue.empty()) {
-        LOG_INFO("Blink draining " + std::to_string((int)mQueue.size()) + " stored packets", "Blink");
-    }
+    if (!flush) mQueue.clear();
 }
 
 void Blink::OnPacketSend(class SDK::Packet* packet, int packetId, bool& cancel) {

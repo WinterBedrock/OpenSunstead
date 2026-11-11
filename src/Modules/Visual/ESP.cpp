@@ -20,11 +20,6 @@ namespace {
 
 static bool projectActorBox(SDK::Actor* actor, const float* mvp, const Vec3& origin,
                             const ImVec2& screen, float expand, ImVec2* tl, ImVec2* br) {
-    // Build the world-space box the Latite/Hitboxes way: take the box DIMENSIONS
-    // from the AABB component but POSITION it from the reliable state-vector
-    // position (getPos). The raw AABB min/max can be stale or in a shifted
-    // frame, which made boxes land off the actual player. Rebasing onto getPos
-    // guarantees the box sits where the player actually is.
     Vec3 pos;
     AABB bb;
     __try {
@@ -36,12 +31,6 @@ static bool projectActorBox(SDK::Actor* actor, const float* mvp, const Vec3& ori
     if (!(dim.x > 0.05f && dim.x < 6.0f) || !(dim.y > 0.1f && dim.y < 6.0f)) {
         dim = Vec3(0.6f, 1.8f, 0.6f);
     }
-    // Rebase the EXACT AABB onto the interpolated render position. The AABB
-    // already carries correct world placement (feet at bb.lower.y), so we only
-    // shift it by the single delta (renderPos - pos). One delta for all axes ==
-    // horizontal and vertical move together, killing the Y-axis desync jitter.
-    // interpRenderPos = push-time pair + served push's alpha: same instant as
-    // the served camera, so boxes glide 1:1 with the drawn model.
     Vec3 rp = SDK::interpRenderPos(actor);
     Vec3 delta(rp.x - pos.x, rp.y - pos.y, rp.z - pos.z);
     Vec3 mn(bb.lower.x  + delta.x, bb.lower.y  + delta.y, bb.lower.z  + delta.z);
@@ -92,25 +81,8 @@ static int projectActorCorners(SDK::Actor* actor, const float* mvp, const Vec3& 
 }
 
 // ---------------------------------------------------------------------------
-// Theme gradient (ColorUtils) — shared by every box mode.
-//
-// Themed boxes read ColorUtils::getThemedColor(index, ms), the exact helper the
-// ClickGUI sheet, ArrayList, Watermark, NameTags, Aura and TargetHUD use, so ESP
-// now follows whatever Theme / Gradient (Smooth|Wave) / Color Speed / Saturation
-// is picked in the ClickGUI instead of a single flat theme colour.
-// `index` is a position along the ANIMATED palette and ColorUtils::getThemedPeriod()
-// is the index span of exactly ONE full palette cycle for the active theme (it
-// folds in Color Speed), i.e. what ClickGUI stretches across its whole menu so a
-// spatial gradient stays a full cycle. A box is much smaller than the menu, so a
-// quarter of a cycle is swept across its height: the top and bottom edges are
-// always visibly different colours, without a whole rainbow repeating inside one
-// small box.
 static constexpr float kEspGradCycleFrac = 0.25f;
 
-// Index span swept from a box's top edge to its bottom edge, in
-// getThemedColor's index space. Resolved ONCE per frame (getThemedPeriod()
-// scans the ClickGUI settings by name, so it must never run per vertex) and
-// threaded into every tint call below.
 static float espGradSpan() {
     return ColorUtils::getThemedPeriod() * kEspGradCycleFrac;
 }
@@ -122,17 +94,6 @@ static ImColor espThemeAt(float t, float span, uint64_t ms) {
     return ColorUtils::getThemedColor(t * span, ms);
 }
 
-// Retint every vertex the draw list emitted since vStart (one shape / one arm /
-// one cube edge) with the vertical theme gradient sampled at that vertex's own
-// y. The shape is first emitted in white and its vertices are tinted in place —
-// the same in-place vertex tint ImRenderUtils::fillGradientRounded and
-// OreMiner's themed progress bar use, and the reason ESP needs it here is that
-// AddRectFilledMultiColor can only shade a bare quad: it cannot stroke an
-// outline, a cube edge or a corner-bracket arm.
-//
-// Each vertex keeps its own coverage alpha (ImGui emits the anti-aliased fringe
-// with alpha 0 and the solid core with 255), scaled by alphaScale (the fill
-// opacity when this run is a fill), so silhouettes stay smooth.
 static void tintEspGradient(ImDrawList* dl, int vStart, float yTop, float yBot,
                             float span, uint64_t ms, float alphaScale = 1.0f) {
     const int vEnd = dl->VtxBuffer.Size;
@@ -147,9 +108,6 @@ static void tintEspGradient(ImDrawList* dl, int vStart, float yTop, float yBot,
     }
 }
 
-// ---- HP indicator (settings [13]/[14]) -------------------------------------
-// Health fraction -> traffic-light colour: full = bright green, ~half =
-// yellow, near death = red. The callers add the low-HP flash on top.
 static ImU32 hpColor(float frac, float alpha = 1.0f) {
     if (frac < 0.0f) frac = 0.0f; else if (frac > 1.0f) frac = 1.0f;
     // green (0.20,1.00,0.25) -> yellow (1.00,0.95,0.20) on [0.5..1],
@@ -169,10 +127,6 @@ static ImU32 hpColor(float frac, float alpha = 1.0f) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, alpha));
 }
 
-// Soft OUTWARD-only shadow around a 2D ESP rect outline (the "Shadow"
-// setting): the SAME gaussian penumbra the menu chrome (buttons, ArrayList
-// rows) uses — it hugs the box silhouette and fades smoothly outward, never
-// inside the lines.
 static void espRectShadow(ImDrawList* dl, const ImVec2& tl, const ImVec2& br,
                           float opacity, float spread) {
     if (opacity <= 0.005f || spread <= 0.5f) return;
@@ -181,13 +135,6 @@ static void espRectShadow(ImDrawList* dl, const ImVec2& tl, const ImVec2& br,
                                        spread, 0.9f, dl);
 }
 
-// Flat mode: ONE vertical world-space plane through the player's CENTER,
-// oriented by the ACTOR'S OWN LOOK DIRECTION — the strip runs left-right
-// ACROSS the body, perpendicular to where they are facing, so it always
-// presents its face toward whatever (or whoever) the actor is looking at,
-// while staying glued to them like real 3D geometry (interp render
-// position, distance scaling). Not an axis-aligned screen rect like the
-// usual 2D, not the corner cage of the 3D mode.
 static void drawFlatPlane(SDK::Actor* actor, ImDrawList* dl, const float* mvp,
                           const Vec3& origin, const ImVec2& screen, float scaleMul,
                           bool doFill, bool themeFill, ImU32 fillColor, float fillOp,
@@ -249,9 +196,6 @@ static void drawFlatPlane(SDK::Actor* actor, ImDrawList* dl, const float* mvp,
 // with a black outline like the 2D-Corner brackets carry.
 static void drawHpBar2D(ImDrawList* dl, const ImVec2& tl, const ImVec2& br,
                          float frac, double time, float op) {
-    // Scale the whole bar with the box height: a fixed 4px line stayed fat
-    // while a distant player's box shrank to a handful of px, so the HP line
-    // read cartoonishly thick from far away. 140px-tall box = full size.
     const float h = br.y - tl.y;
     const float s = std::clamp(h / 140.0f, 0.25f, 1.0f);
     const float w = 4.0f * s;               // bar cross-section
@@ -277,15 +221,6 @@ static void drawHpBar2D(ImDrawList* dl, const ImVec2& tl, const ImVec2& br,
     }
 }
 
-// Ring mode: flat health ring lying on the ground UNDER THE PLAYER'S FEET,
-// drawn like the reference ESP ground markers: centred on the hitbox, sized
-// to the hitbox, with a WORLD-space band width — so it stays proportional to
-// the ESP box at any distance instead of reading as a thin screen-space
-// overlay stroke. The centre is the box recipe's feet rebase — the footprint
-// CENTRE shifted by the render-position delta (interpRenderPos is an
-// interpolated pos, NOT a feet/world anchor by itself; using the raw AABB
-// min corner put the ring off to one side of the model) — plus a hair of
-// lift so the ring never z-fights the ground.
 static void drawHpRing(SDK::Actor* actor, ImDrawList* dl, const float* mvp,
                        const Vec3& origin, const ImVec2& screen, float frac,
                        double time, float op) {
@@ -351,11 +286,6 @@ static void drawHpRing(SDK::Actor* actor, ImDrawList* dl, const float* mvp,
 static int g_espFrame = 0;
 static bool g_espResetCache = false;
 
-// Reset the matrix cache whenever the module is freshly enabled. On a direct
-// world-join (ESP already on from config) the function-static cache could hold
-// a stale/garbage mvp captured during the menu->world transition, so boxes
-// projected with it landed off-screen вЂ” which looked like "nothing renders
-// until I toggle off/on". Clearing on enable guarantees a clean first frame.
 void ESP::OnEnable() { g_espResetCache = true; }
 
 void ESP::OnRender() {
@@ -377,29 +307,9 @@ void ESP::OnRender() {
     Vec3 origin(0, 0, 0);
     if (!acquireCameraMVP(ci, mvp, origin)) { if (dbg) LOG_WARN("acquireCameraMVP failed", "ESP"); return; }
 
-    // ESP::OnRender runs once per game screen (play_screen, hud_screen,
-    // chat_screen...) but the matrices/origin are only valid during the
-    // in-world (hud_screen) pass. On the other passes origin reads 0,0,0 and
-    // projection fails. The draw list that actually gets flushed may belong to
-    // a different pass, so boxes computed on the good pass never reach screen.
-    // Fix: cache the last VALID mvp+origin and reuse it on the invalid passes,
-    // so every pass (including the one that flushes) draws correct boxes.
-    // The background draw list is GLOBAL and flushed once per frame, but
-    // ESP::OnRender runs several times per frame (one per active screen). On the
-    // in-world pass origin/matrix are fresh; on the others origin reads 0 and the
-    // matrix is stale. Drawing on more than one pass put TWO sets of boxes into
-    // the same flushed list вЂ” one fresh, one a frame behind - which is exactly
-    // the jitter you see while rotating. Fix: draw on the fresh-matrix pass only,
-    // and at most once per ImGui frame.
     bool originValid = (origin.x != 0.0f || origin.y != 0.0f || origin.z != 0.0f);
     if (!originValid) return;                 // skip stale passes entirely
 
-    // Draw at most ONCE per ImGui frame. Rendering runs inside the DX Present
-    // hook, so there is exactly one pass per frame; the previous pass-COUNT
-    // deferral (draw on "the last valid pass" using the previous frame's pass
-    // total) could silently DROP frames whenever the count fluctuated (screen
-    // transitions, one-off invalid origins) — the box then froze on screen for
-    // several frames and visibly "slid back" onto the player.
     static int s_drawnFrame = -1;
     int frame = ImGui::GetFrameCount();
     if (g_espResetCache) { s_drawnFrame = -1; g_espResetCache = false; }
@@ -422,9 +332,6 @@ void ESP::OnRender() {
     float* fcol     = static_cast<ColorSetting*>(mSettings[6])->mValue;  // custom fill rgba
     float fillOp    = static_cast<NumberSetting*>(mSettings[7])->mValue;
 
-    // Palette clock + gradient span for every themed box this frame. GetTimeMs()
-    // is the same clock ArrayList / NameTags / Aura / TargetHUD animate on, so
-    // ESP's gradient stays in phase with the rest of the overlay's theme.
     const uint64_t nowMs = ColorUtils::GetTimeMs();
     const float    gradSpan = espGradSpan();
     ImU32 outline = ImGui::ColorConvertFloat4ToU32(ImVec4(0, 0, 0, 0.85f));
@@ -432,16 +339,7 @@ void ESP::OnRender() {
     int players = 0, projected = 0;
     ImVec2 dbgTl(0,0), dbgBr(0,0); bool dbgHave=false;
     bool showEntities = static_cast<BoolSetting*>(mSettings[8])->mValue;
-    // [11] Render Self: draw the same box on the LOCAL player, but only while
-    // the game camera is in third person (GameHooks::LastPerspective():
-    // 0 = first person, 1 = third-back, 2 = third-front — the value cached by
-    // the Options::getPerspective hook that Freelook/CameraClip also read).
-    // In first person the box would sit mid-screen over the crosshair, so it
-    // is skipped there.
     const bool renderSelf = static_cast<BoolSetting*>(mSettings[11])->mValue;
-    // [12] "Theme": force the box OUTLINE onto the live theme gradient
-    // (tintEspGradient / ColorUtils::getThemedColor) regardless of the "Color"
-    // source [1], i.e. a themed box even when Color = Custom.
     const bool themeMode = static_cast<BoolSetting*>(mSettings[12])->mValue;
     // [13]/[14] HP indicator: vertical bar (2D) or ground ring (Ring).
     const bool hpShow = mSettings.size() > 13 && static_cast<BoolSetting*>(mSettings[13])->mValue;
@@ -469,17 +367,7 @@ void ESP::OnRender() {
         ? std::clamp(static_cast<NumberSetting*>(mSettings[21])->mValue, 0.05f, 0.15f) : 0.0f;
     const double nowT = ImGui::GetTime();
 
-    // Shared per-actor draw body — used for world actors and, when Render Self
-    // is on, for the local player entity (same projection path). The old
-    // loop-`continue`s become early returns.
     auto drawActorBox = [&](SDK::Actor* actor) {
-        // ---- Outline colour: Theme gradient or Custom picker ----
-        // Theme mode emits WHITE and the shape's vertices are re-tinted with the
-        // live vertical theme gradient right after it is drawn (tintEspGradient,
-        // top edge = theme colour, bottom edge = the next colour along the
-        // palette). Custom mode keeps the flat user-picked RGBA exactly as before.
-        // [12] "Theme" forces the animated gradient on the outline even when the
-        // "Color" source is Custom (themed box wins over the flat picker).
         const bool themeOutline = (colMode == 0) || themeMode;
         const bool themeFill    = (fillMode == 0);
         ImU32 color = themeOutline
@@ -495,9 +383,6 @@ void ESP::OnRender() {
                 : ImGui::ColorConvertFloat4ToU32(ImVec4(fcol[0], fcol[1], fcol[2], fillOp));
         }
 
-        // ---- HP indicator ([13]/[14]): 2D bar beside the box, or a flat
-        //      health ring on the ground under the player. Drawn BEFORE the
-        //      box so the ground ring never paints over the box lines. ----
         if (hpShow && hpOpacity > 0.0f) {
             auto hp = actor->getHealth();
             if (hp && *hp > 0.0f) {
@@ -515,18 +400,12 @@ void ESP::OnRender() {
         }
 
         if (mode == 4) {
-            // ---- Flat (mode 4): ONE vertical world plane through the player's
-            //      center, rotated with the body (yaw) — an Outline-ESP look
-            //      whose 2D shape depends on the view angle. ----
             drawFlatPlane(actor, dl, mvp, origin, screen, flatScale,
                           doFill, themeFill, fillColor, fillOp,
                           themeOutline, color, thickness, gradSpan, nowMs);
             ++projected;
             if (!dbgHave) { dbgTl = ImVec2(0, 0); dbgBr = screen; dbgHave = true; }
         } else if (mode == 0 || mode == 1) {
-            // ---- 2D modes: screen-space rectangle / corner brackets. Fill and
-            //      outline are flat colours in Custom mode, a vertical theme
-            //      gradient in Theme mode (tinted per vertex, see above). ----
             ImVec2 tl, br;
             if (!projectActorBox(actor, mvp, origin, screen, espExpand, &tl, &br)) {
                 return;
@@ -551,35 +430,9 @@ void ESP::OnRender() {
                 // the current palette position, bottom edge = a quarter cycle later.
                 if (themeOutline) tintEspGradient(dl, vLine, tl.y, br.y, gradSpan, nowMs);
             } else {
-                // 2D Corner (mode 1): Rise CS corner brackets (arms = w/4, h/4).
-                //
-                // FLICKER FIX: the old pass drew 8 hand-tuned 1.5 px black
-                // backing rects at half-pixel offsets plus 8 separate 0.5 px
-                // color rects. The two sets did not share geometry, so every
-                // sub-pixel wobble of the projected box let the black backing
-                // peek out around/between the color arms and the arm junctions
-                // flashed black. Now each of the 8 arms is defined ONCE and its
-                // black underlay is the SAME rect expanded by a fixed pixel pad,
-                // drawn immediately before its color arm — identical geometry,
-                // identical order, every frame, no conditional arms, no
-                // half-pixel-thin color lines.
                 const float x = tl.x, y = tl.y, z = br.x, w = br.y;
                 const float bw = z - x, bh = w - y;
-                // Color arm thickness (px) — the module's "Thickness" setting.
-                // The arms are plain filled rects (there is no AddLine stroke
-                // width to lean on here), so ct is used directly as each arm's
-                // cross-section. Clamped to a sane 0.5..6 px so a degenerate value
-                // can neither erase the brackets nor swallow the box (the setting
-                // itself already spans 0.5..5).
                 const float ct  = std::clamp(thickness, 0.5f, 6.0f);
-                // Corner length now follows the arm cross-section as well as the
-                // box: the Rise CS w/4 / h/4 split stays the starting point, but
-                // each arm is clamped to [2 * ct, half the box]. Below 2 * ct an
-                // arm is shorter than its own stroke and the bracket reads as a
-                // solid blob on small / thin-cornered boxes; above half the box
-                // the two facing arms on an edge touch and the corners become a
-                // full rectangle. Both bounds scale with Thickness and with the
-                // projected size, so the brackets stay proportional everywhere.
                 auto armLen = [ct](float extent) {
                     const float half = extent * 0.5f;
                     return std::clamp(extent * 0.25f, std::min(ct * 2.0f, half), half);
@@ -599,9 +452,6 @@ void ESP::OnRender() {
                     { z - ct, w - ay,     z,      w      }, // bottom-right: vertical
                 };
                 for (const Arm& a : arms) {
-                    // Optional shadow: the same gaussian chrome penumbra per
-                    // arm — a soft halo outside the bracket, never inside
-                    // (the arm's opaque fill covers the inner band).
                     if (espShadow) {
                         ImRenderUtils::fillShadowRectangle(
                             ImVec4(a.x0 - pad, a.y0 - pad, a.x1 + pad, a.y1 + pad),
@@ -613,9 +463,6 @@ void ESP::OnRender() {
                                       ImVec2(a.x1 + pad, a.y1 + pad), outline, 0.0f);
                     const int vArm = dl->VtxBuffer.Size;
                     dl->AddRectFilled(ImVec2(a.x0, a.y0), ImVec2(a.x1, a.y1), color, 0.0f);
-                    // Themed arms are tinted on the BOX axis (y .. w == tl.y .. br.y),
-                    // not on their own local extent, so the eight brackets read as
-                    // ONE vertical gradient down the box instead of eight flat ones.
                     if (themeOutline) tintEspGradient(dl, vArm, y, w, gradSpan, nowMs);
                 }
             }
@@ -635,14 +482,6 @@ void ESP::OnRender() {
                 if (p[i].y > gyBot) gyBot = p[i].y;
             }
 
-            // ---- Volumetric fill ----
-            // 3D mode fills the cube faces so the translucent volume follows
-            // the box. OUTLINE mode fills only the projected SILHOUETTE: the
-            // face fill stacked up to 4 overlapping translucent quads (front +
-            // back faces visible at once), and their shared borders crossed
-            // the body as stray bright lines that visibly broke the clean
-            // outline look. The hull fill is a single flat shape with no
-            // internal edges — identical outline with or without Fill.
             ImVec2 hullPts[18]; int hullN = 0;
             if (mode == 3 || doFill) {
                 ImVec2 valids[8]; int nv = 0;
@@ -669,29 +508,18 @@ void ESP::OnRender() {
             }
 
             if (mode == 2) {
-                // Full 3D wireframe: all 12 cube edges. (NOTE: this is mode 2
-                // — an earlier revision of this branch still checked mode 1,
-                // which the 2D-Corner branch above already consumes, so "3D"
-                // silently rendered the outline silhouette instead.)
                 auto cube = [&](ImU32 c, float th, bool themed){
                     for (int i = 0; i < 12; ++i) {
                         int a = SDK::BoxOverlay::kCubeEdges[i][0], b = SDK::BoxOverlay::kCubeEdges[i][1];
                         if (!(vb[a] && vb[b])) continue;
                         const int vEdge = dl->VtxBuffer.Size;
                         dl->AddLine(p[a], p[b], c, th);
-                        // Themed edges get the same vertical gradient: a pillar
-                        // fades top->bottom, a face edge at constant y stays flat,
-                        // and every edge keeps its anti-aliased fringe alpha.
                         if (themed) tintEspGradient(dl, vEdge, gyTop, gyBot, gradSpan, nowMs);
                     }
                 };
                 cube(outline, thickness + 1.5f, false);   // flat black backing
                 cube(color,   thickness,      themeOutline);
             } else {
-                // Outline: silhouette only -> convex hull of the projected box.
-                // This draws a single clean contour around the player with NO
-                // edges crossing in front of the body (the requested look).
-                // Reuses the hull computed above (fill draws the same shape).
                 if (hullN >= 2) {
                     dl->AddPolyline(hullPts, hullN, outline, ImDrawFlags_Closed, thickness + 1.5f);
                     const int vHull = dl->VtxBuffer.Size;
@@ -712,10 +540,6 @@ void ESP::OnRender() {
         drawActorBox(actor);
     }
 
-    // Render Self [11]: run the exact same projection path for the LOCAL
-    // player entity, but only while the game camera is in third person
-    // (0 = first person). The camera MVP already reflects the current
-    // perspective, so the box lands on the own body 1:1.
     if (renderSelf && lp && GameHooks::LastPerspective() != 0)
         drawActorBox(lp);
 

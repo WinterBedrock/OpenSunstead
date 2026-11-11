@@ -7,23 +7,6 @@
 
 namespace SDK {
 
-// SetScorePacket (SetScore, packet ID 108) — 1.26.50.04 / 1.26.51.01, cereal-only
-// (the 1.26.30.05 layout: action@+0x30, entries@+0x38, 104-byte entries is
-// STALE — the members moved).
-//   base Packet = 0x30; send ctor sub_14055F030; cereal read = vtable[5].
-//   +0x30  std::vector<ScorePacketInfo> entries
-//   +0x48  int32 serializationMode (5 = CerealOnly)
-// ScorePacketInfo — 0x60 / 96 bytes per entry (stride proven by the vector copy
-// helper sub_143B48650; FakePlayer entry-copy sig unique on both exes: RVA
-// 0x3B49020 / 0x3B4A150):
-//   +0x00  i64 scoreboardId        +0x08  i64 pad
-//   +0x10  std::string objectiveName (size@+0x20, cap@+0x28)
-//   +0x30  i32 score               +0x34  pad[4]
-//   +0x38  std::string customName (FakePlayer; size@+0x48, cap@+0x50) —
-//          int64 actorUniqueId for Player/Entity entries
-//   +0x58  u8 identityType (0=Invalid 1=Player 2=Entity 3=FakePlayer)
-// Raw overlay onto the packet's vector entries: do NOT construct or copy —
-// the std::string members alias game-owned storage.
 
 // IdentityDefinition::Type — the discriminator byte at ScorePacketInfo+0x58.
 namespace IdentityDefinition {
@@ -72,9 +55,6 @@ public:
 
     size_t count() const { return entries.size(); }
 
-    // Rewrite every FakePlayer customName substring `from` -> `to`; returns
-    // the number of entries modified. NOT SEH-guarded — guard at the call
-    // site on live/untrusted packets.
     int replaceFakePlayerName(const std::string& from, const std::string& to) {
         if (from.empty()) return 0;
         int changed = 0;

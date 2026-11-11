@@ -3,7 +3,6 @@
 #include "SigObfuscate.h"
 #include "OffsetManager.h"
 #include "../SDK/SDKRuntime.h"
-#include "../Security/VMP.h"
 #include "../Core/Logger.h"
 
 #include <chrono>
@@ -15,50 +14,53 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// sigs value
-inline SigEntry Direct(const char* name, const char* pat, uintptr_t* out,
-                       const char* alt = nullptr) {
-    return { name, pat, alt, out, nullptr, SigResolve::Direct, 0, 0 };
+
+inline SigEntry Direct(const char* name, const char* pat, uintptr_t* out) {
+    return { name, pat, out, nullptr, SigResolve::Direct, 0, 0 };
 }
 
 inline SigEntry Rel32(const char* name, const char* pat, uintptr_t* out,
                       int relAt, int instrLen) {
-    return { name, pat, nullptr, out, nullptr, SigResolve::Rel32,
+    return { name, pat, out, nullptr, SigResolve::Rel32,
              static_cast<int16_t>(relAt), static_cast<int16_t>(instrLen) };
 }
 
 inline SigEntry Off32(const char* name, const char* pat, int* out, int readAt) {
-    return { name, pat, nullptr, out, nullptr, SigResolve::Offset32,
+    return { name, pat, out, nullptr, SigResolve::Offset32,
              static_cast<int16_t>(readAt), 0 };
 }
 
 inline SigEntry Backstep(const char* name, const char* pat, uintptr_t* out, int back) {
-    return { name, pat, nullptr, out, nullptr, SigResolve::Backstep,
+    return { name, pat, out, nullptr, SigResolve::Backstep,
              static_cast<int16_t>(back), 0 };
 }
 
 inline SigEntry OffPair(const char* name, const char* pat,
                         int* outA, int readA, int* outB, int readB) {
-    return { name, pat, nullptr, outA, outB, SigResolve::Offset32Pair,
+    return { name, pat, outA, outB, SigResolve::Offset32Pair,
              static_cast<int16_t>(readA), static_cast<int16_t>(readB) };
 }
 
 inline SigEntry ItemWalk(const char* name, const char* pat, int* out) {
-    return { name, pat, nullptr, out, nullptr, SigResolve::ItemNameWalk, 0, 0 };
+    return { name, pat, out, nullptr, SigResolve::ItemNameWalk, 0, 0 };
 }
 
 } // namespace
 
-void SigManager::buildTable(SigEntry* t, size_t* count) const {
-    SUN_VMP_BEGIN_VIRTUAL("SigManager.buildTable");
-
-    auto* self = const_cast<SigManager*>(this);
+void SigManager::buildTable(SigEntry* t, size_t* count) {
+    auto* self = this;
     auto& off  = OffsetManager::GetInstance();
     size_t n = 0;
 
     auto push = [&](SigEntry e) {
         if (n < kMaxSigs) t[n++] = e;
     };
+    push(Direct(SUNSIG("Level::getRuntimeActorList"),
+        SUNSIG("55 41 56 56 57 53 48 83 EC 40 48 8D 6C 24 ? 48 C7 45 ? ? ? ? ? 48 8B B1 ? ? ? ? 0F 57 C0"),
+        &self->Level_getRuntimeActorList));
+    push(Direct(SUNSIG("Memory::sizedDelete"),
+        SUNSIG("55 48 83 EC 30 48 8D 6C 24 ? 48 C7 45 ? ? ? ? ? 48 89 CA 48 8B 0D"),
+        &self->Memory_freeSized));
 
     push(Direct(SUNSIG("Options::getGamma"),
         SUNSIG("48 83 EC 38 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 48 8B 01 48 8B 40 08 48 8D 54 24 ? 41 B8 32 00 00 00"),
@@ -90,11 +92,11 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Off32(SUNSIG("Actor::mRotation"),
         SUNSIG("48 8B B6 ? ? ? ? F2 0F 10 4C 24 ? F3 0F 10 3D ? ? ? ? F3 0F 10 44 24 ? F3 0F 58 C7 F2 0F 11 0E"),
         &off.Actor_mRotation, 3));
-    // BA imm32; E8 rel32  -  call starts at +5, disp at +6, next_ip = +10
+
     push(Rel32(SUNSIG("entt::registry::assure"),
         SUNSIG("BA 19 A4 6B 4F E8 ? ? ? ? 48 89 C7 48 89 D9 BA 97 27 0C 8A E8"),
         &self->entt_assure, 6, 10));
-    // ref: 189 : mov edx,0C67426F3h / call
+
     push(Rel32(SUNSIG("entt::registry::assure<ActorDataFlagComponent>"),
         SUNSIG("BA F3 26 74 C6 E8 ? ? ? ? 89 F9 81 E1 00 F8 03 00 C1 E9 08 48 8B 50 08 48 8B 40 50 48 8B 0C 0A 81 E7 FF 07 00 00"),
         &self->entt_assure_actorDataFlag, 6, 10));
@@ -102,7 +104,7 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
         SUNSIG("74 ? 48 8B 03 48 8B 80 ? ? ? ? 48 89 D9 FF 15 ? ? ? ? 90 84 C0 75 ? 48 8B 4B"),
         &self->thirdPersonNametag));
     push(Rel32(SUNSIG("mouseDevice"),
-        SUNSIG("48 8D 0D ? ? ? ? B2 01 41 B0 01 E8 ? ? ? ? 90"),
+        SUNSIG("48 8D 0D ? ? ? ? B2 01 41 B0 01 E8 ? ? ? ? 90 E9 ? ? ? ? 66"),
         &self->mouseDeviceAddr, 3, 7));
     push(Direct(SUNSIG("MouseDevice::feed"),
         SUNSIG("41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC 48 44 89 CF 44 89 C3 89 D5 48 89 CE 44 0F B7 A4 24 ? ? ? ?"),
@@ -153,7 +155,7 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 58 01 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 44 89 CE 4C 89 C7 41 89 D6 48 89 CB 48 8B 01 48 8B 80 38 01 00 00 FF 15 ? ? ? ? 84 C0"),
         &self->ContainerScreenController_handleAutoPlace));
     push(Direct(SUNSIG("Actor::getUniqueID"),
-        SUNSIG("48 83 EC 28 4C 8B 41 10 8B 41 18 49 8B 48 48 4D 8B 48 50 49 29 C9 49 C1 E9 03 41 FF C9 41 81 E1 B5 BB 0D FC 4E 8D 14 C9 49 8B 48 68 0F 1F 40 00 4D 8B 0A 49 83 F9 FF 0F 84 ? ? ? ? 49 C1 E1 05 4E 8D 14 09 42 81 7C 09 08 B5 BB 0D FC 75 ? 4C 01 C9 49 39 48 70 0F 84 ? ? ? ?"),
+        SUNSIG("48 83 EC 28 4C 8B 41 ? 8B 41 ? 49 8B 48 ? 4D 8B 48 ? 49 29 C9 49 C1 E9 03 41 FF C9 41 81 E1 B5 BB 0D FC 4E 8D 14 C9 49 8B 48 ? 0F 1F 40 ? 4D 8B 0A 49 83 F9 FF 0F 84 ? ? ? ? 49 C1 E1 05 4E 8D 14 09 42 81 7C 09 ? ? ? ? ? 75 ? 4C 01 C9 49 39 48 ? 0F 84"),
         &self->Actor_getUniqueID));
     push(Direct(SUNSIG("ContainerScreenController::_getSelectedSlotInfo"),
         SUNSIG("41 56 56 57 55 53 48 83 EC 40 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 44 8B 81"),
@@ -161,29 +163,16 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Rel32(SUNSIG("ContainerScreenController::getItemStack"),
         SUNSIG("44 8B 85 ? ? ? ? 48 89 D9 4C 89 F2 E8 ? ? ? ? 90 48 89 D9 48 89 FA 41 89 F0 49 89 C1 E8 ? ? ? ? 90 84 C0"),
         &self->ContainerScreenController_getItemStack, 14, 18));
-    // ItemStackNetManagerScreen::requestDrop(this, {collectionName, slot}, {mode, amount, flag}).
-    // The whole-slot drop the inventory UI itself runs: a thin wrapper that copies the
-    // 3-int drop params and calls the slot-action dispatcher with mode 1 (Drop). Reversed
-    // from sub_1433EF210 on 1.26.50.04 (the wrapper's body is exactly: copy params,
-    // mov r9d,1, call dispatcher). The action it enqueues rides the manager's own
-    // pending ItemStackRequest, so bookkeeping stays with the game.
     push(Direct(SUNSIG("ItemStackNetManagerScreen::requestDrop"),
         SUNSIG("48 83 EC 38 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 30 49 8B 00 48 89 44 24 20 41 8B 40 08 89 44 24 28 4C 8D 44 24 20 41 B9 01 00 00 00 E8 ? ? ? ? 48 8B 4C 24 30 48 31 E1"),
         &self->ItemStackNetManager_requestDrop));
-    // ContainerScreenController::_tryAutoPlace — the core move. Unique on this
-    // build (verified in IDA). Reached by the game's own slot-press handler for
-    // BOTH interaction models; handleAutoPlace only routes here on touch.
     push(Direct(SUNSIG("ContainerScreenController::_tryAutoPlace"),
         SUNSIG("55 41 56 56 57 53 48 83 EC 70 48 8D 6C 24 70 48 C7 45 F8 FE FF FF FF 4C 89 CE 48 89 CF 48 8D 5D D0 48 89 D9 E8 ? ? ? ? 48 8B 07 48 8B 80 D0 01 00 00"),
         &self->ContainerScreenController_tryAutoPlace));
-    // ContainerScreenController::_getSlotInfo — resolves the slot-info argument
-    // _tryAutoPlace wants. The long tail (empty-info check + model resolve +
-    // slot validation) is what separates it from two identical sibling
-    // overloads that share its prologue.
     push(Rel32(SUNSIG("ContainerScreenController::_getSlotInfo"),
         SUNSIG("44 8B 85 ? ? ? ? 48 89 D9 4C 89 F2 E8 ? ? ? ? 90 48 89 D9 48 89 FA 41 89 F0 49 89 C1 E8 ? ? ? ? 90 84 C0"),
         &self->ContainerScreenController_getSlotInfo, 14, 18));
-    // todo fix
+
     push(Direct(SUNSIG("Actor::setImmobile"),
         SUNSIG("56 53 48 83 EC 58 89 D3 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 48 8B 41 ? 8B 71 ? 48 89 C1 BA CB 40 4E AB"),
         &self->Actor_setImmobile));
@@ -227,11 +216,9 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
         SUNSIG("84 C0 75 ? F3 0F 10 3D ? ? ? ? EB ? F3 0F 10 3D ? ? ? ? 48 8B 03 48 8B 80 78 0A 00 00 48 89 D9 FF 15 ? ? ? ? 90 8B 40 18 83 C0 FC"),
         &self->ReachClampCapLoadAnchor12660));
     push(Direct(SUNSIG("ReachClamp::Register12660"),
-        SUNSIG("84 C0 74 ? F3 44 0F 5D C7 31 F6 48 8B 8D ? ? ? ? EB ? 44 0F 2E C7 48 8B 8D ? ? ? ? 76 ? 40 B6 01 44 0F 28 C7"),
+        SUNSIG("84 C0 74 ? F3 44 0F 5D C7 EB ? 44 0F 2E C7 76 ? 40 B6 01 44 0F 28 C7 EB ? 31 F6 48 8B 8D ? ? ? ?"),
         &self->ReachClampRegisterAnchor12660));
-    push(Direct(SUNSIG("WaterBlockLegacy_getCollisionShapeForCamera"),
-        SUNSIG("0F 10 81 ? ? ? ? 48 8B C2 F2 0F 10 89 ? ? ? ? 0F 11 02 F2 0F 11 4A 10 C3"),
-        &self->WaterBlockLegacy_getCollisionShape));
+
     push(Rel32(SUNSIG("ScreenView::setupAndRender"),
         SUNSIG("E8 ? ? ? ? 90 48 8B 4B 20 48 85 C9 74 ? 48 8B 01 48 8B 40 10 48 89 FA FF 15 ? ? ? ? 90 48 8D 4D ?"),
         &self->ScreenView_setupAndRender, 1, 5));
@@ -248,12 +235,8 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Direct(SUNSIG("ItemActor::spinAngle"),
         SUNSIG("F3 0F 59 3D ? ? ? ? 48 8D 4D ? 4C 8D 4D ? 4C 89 FA 0F 28 D7 E8"),
         &self->ItemActor_spinAngleMov));
-    push(Direct(SUNSIG("ItemActor::getBobHeight"),
-        SUNSIG("56 48 83 EC 60 44 0F 29 4C 24 ? 44 0F 29 44 24 ? 0F 29 7C 24 ? "
-               "0F 29 74 24 ? 48 85 D2"),
-        &self->ItemActor_getBobHeight));
     push(Direct(SUNSIG("Matrix::rotateAxisAngle"),
-        SUNSIG("56 57 53 48 81 EC 90 00 00 00 44 0F 29 A4 24 80 00 00 00 44 0F 29 5C 24 70 44 0F 29 54 24 60 44 0F 29 4C 24 50 44 0F 29 44 24 40 0F 29 7C 24 30 0F 29 74 24 20 4C 89 CB 0F 28 FA 48 89 D7 48 89 CE 0F 28 C2 FF 15 ? ? ? ? 0F 28 F0 0F 28 C7 FF 15 ? ? ? ? F2 0F 10 63 04 0F 28 D4"),
+        SUNSIG("56 57 53 48 81 EC 90 00 00 00 44 0F 29 A4 24 80 00 00 00 44 0F 29 5C 24 70 44 0F 29 54 24 60 44 0F 29 4C 24 50 44 0F 29 44 24 40 0F 29 7C 24 30 0F 29 74 24 20 4C 89 CB 0F 28 FA 48 89 D7 48 89 CE 0F 28 C2 FF 15 ? ? ? ? 0F 28 F0"),
         &self->Matrix_rotateAxisAngle));
     push(Direct(SUNSIG("ItemActor::renderStackedCopies"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC B8 00 00 00 48 8D AC 24 80 00 00 00 0F 29 7D 20 0F 29 75 10 48 C7 45 08 FE FF FF FF 4C 89 C3 48 89 D6 48 89 CF F3 0F 10 B5 A8 00 00 00 F3 0F 10 3D ? ? ? ? F3 0F 5E BD A0 00 00 00"),
@@ -293,7 +276,7 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 01 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 5D ? 44 0F 29 55 ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 4D 89 CE"),
         &self->ActorRenderDispatcher_renderB));
     push(Direct(SUNSIG("ActorRenderDispatcher::renderC (slot32)"),
-        SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 01 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 5D ? 44 0F 29 55 ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 41 80 B8"),
+        SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 01 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 5D ? 44 0F 29 55 ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? ? ? ? ? 41 80 B8 89 02 00 00 00 0F 85 ? ? ? ? 4C 89 C7"),
         &self->ActorRenderDispatcher_renderC));
     push(Direct(SUNSIG("Options::getPerspective"),
         SUNSIG("48 83 EC 38 48 8B 05 ? ? ? ? 48 31 E0 48 89 44 24 ? 48 8B 01 48 8B 40 08 48 8D 54 24 ? 41 B8 03 00 00 00"),
@@ -340,16 +323,9 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Direct(SUNSIG("StarveSprint::foodGate"),
         SUNSIG("FF C1 F3 0F 10 05 ? ? ? ? 41 0F 2E 40 ? B8 01 00 00 00 0F 43 C1"),
         &self->StarveSprint_foodGate));
-    // BlockSource_A::getBlock(BlockPos const&) impl 0x1432CE440 (vtable slot
-    // 2, byte 0x10 of 0x14F188A20/BS-family tables). The plain prologue is a
-    // byte-exact twin of the layered variant 0x1432CE700, so the signature is
-    // the mid-body tail (landmark @ +0xB0) including the registry-global
-    // RIP-relative load — the two functions differ ONLY in those Windows-invariant
-    // displacements (fn1: 48 8B 05 91 80 69 0F, fn2: 48 8B 05 D1 7D 69 0F),
-    // which the on-disk build fixes and ASLR keeps intact.
-    push(Backstep(SUNSIG("BlockSource::getBlock"),
-        SUNSIG("2F 0F B7 46 08 44 0F B7 0E 41 83 E1 0F 41 C1 E1 08 41 83 E0 0F C1 E0 04 0F B6 D0 44 09 C2 44 09 CA 48 8B 01 48 8B 40 18 FF 15 ? ? ? ? EB 21 48 8B 05 91 80 69 0F 48 85 C0"),
-        &self->BlockSource_getBlock, 0xB0));
+    push(Rel32(SUNSIG("BlockSource::getBlock"),
+        SUNSIG("48 8D 54 24 30 48 89 CB 48 89 F9 4D 89 C6 E8 ? ? ? ? 48 89 06"),
+        &self->BlockSource_getBlock, 15, 19));
     push(Direct(SUNSIG("NameTag_buildForActor"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 4C 89 8D ? ? ? ? 4D 89 C7 49 89 D6 48 89 CB 48 8B BD ? ? ? ?"),
         &self->Nametag_buildForActor));
@@ -368,8 +344,6 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Rel32(SUNSIG("SplashText_convert"),
         SUNSIG("41 B8 14 00 00 00 4C 89 F1 E8"),
         &self->SplashText_convert, 10, 14));
-    // Camera-setup stage, ref:
-    // writes the combined camera 4x4 to IClientInstance  +0x380 view / +0x400 proj
     push(Direct(SUNSIG("CameraSetup_writeMatrices"),
         SUNSIG("56 57 48 83 EC 68 44 0F 29 4C 24 50 44 0F 29 44 24 40 0F 29 7C 24 30 0F 29 74 24 20 48 89 D7 48 89 CE 48 8B 81 A8 01 00 00 48 85 C0 0F 84 ? ? ? ? 80 38 00 75 ? C7 04 25 00 00 00 00 DE C0 AD DE 48 8B 8E B8 01 00 00 48 8B 01 48 8B 80 C0 05 00 00 FF 15 ? ? ? ?"),
         &self->CameraSetup_writeMatrices));
@@ -379,8 +353,6 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Direct(SUNSIG("OnFireClientSystem_update"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 45 ? FE FF FF FF 48 89 D3 48 89 55 ? 0F 57 C0 0F 11 45 ? 0F 11 45 ? 8B 05 ? ? ? ? 8B 0D ? ? ? ? 65 48 8B 14 25 58 00 00 00 48 8B 0C CA 3B 81 04 00 00 00 0F 8F ? ? ? ? 48 83 C3 30 48 89 D9 BA 00 38 B9 85 E8 ? ? ? ? 48 89 C7 48 89 D9 BA F3 3F 61 7E"),
         &self->OnFireClientSystem_update));
-    // ClientFireActorEventSystem fire-event handler ref: 
-    // actor flag at +0x269 (cmp byte [rbx+269],0) delivers ActorEvent::Fire through Actor::handleEvent (vtable 68)
     push(Direct(SUNSIG("ClientFireActorEvent_handleFire"),
         SUNSIG("41 57 41 56 56 57 53 48 83 EC ? 48 8B 1A 80 BB ? ? ? ? 00 0F 85 ? ? ? ? 4C 89 CE 48 89 CF 4D 8B 30 4D 8B 78 08"),
         &self->ClientFireActorEvent_handleFire));
@@ -390,17 +362,11 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Direct(SUNSIG("FlameBillboard_draw"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 80 00 00 00 48 C7 85 ? ? ? ? FE FF FF FF 4C 89 C3 48 89 D6 48 89 CF 44 8B 62 70"),
         &self->FlameBillboard_draw));
-    // RakNet::RakPeer::GetAveragePing(AddressOrGUID), 1.26.60 RVA 0x24FCEF0
-    // (RakPeerInterface vtable slot 0x27). Prologue + the ping-array loads:
-    // copies the by-value AddressOrGUID (136 bytes), then movzx the first
-    // uint16 ping/pong slot before the 5-entry average loop. Function entry
-    // verified unique in IDA on 26.60.
     push(Direct(SUNSIG("RakPeer_GetAveragePing"),
         SUNSIG("48 81 EC B8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 31 E0 48 89 84 24 B0 00 00 00 4C 8B 02 4C 3B 05 ?? ?? ?? ?? 0F 85 DE 00 00 00 0F B7 42 10 F2 0F 10 82 90 00 00 00 66 89 44 24 28"),
         &self->RakPeer_GetAveragePing));
-    // test sig
     push(Direct(SUNSIG("UI_drawText_helper"),
-        SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 58 01 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 45 ? ? ? ? ? 0F 28 F3"),
+        SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 48 01 00 00 48 8D AC 24 80 00 00 00 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 45 ? FE FF FF FF 0F 28 F3 4C 89 C3 48 89 D6 48 89 CF"),
         &self->UI_drawText_helper));
     push(Direct(SUNSIG("Actor::addEffect"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 48 89 D7 48 89 CE 8B 12"),
@@ -408,7 +374,6 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Direct(SUNSIG("Actor::removeEffect"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 83 EC ? 48 8D 6C 24 ? 48 C7 45 ? FE FF FF FF 4C 8B 41 10 8B 41 18 4D 8B 48 48 4D 8B 50 50 4D 29 CA 49 C1 EA 03 41 FF CA 41 81 E2 50 B5 A1 E6"),
         &self->Actor_removeEffect));
-    // test sig
     push(Rel32(SUNSIG("I18n::sI18n"),
         SUNSIG("48 8D 0D ? ? ? ? 48 8D 55 E0 4C 8D 45 B8 49 89 F9 E8 ? ? ? ? 90 48 8D 55 E0"),
         &self->I18n_sI18n, 3, 7));
@@ -440,18 +405,16 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
     push(Direct(SUNSIG("UIContext::drawImage"),
         SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC B8 00 00 00 48 8D AC 24 ? ? ? ? 44 0F 29 4D ? 44 0F 29 45 ? 0F 29 7D ? 0F 29 75 ? 48 C7 45 ? FE FF FF FF 4D 89 CE 4D 89 C4 48 89 55 ? 48 89 CF 4C 8B AD ? ? ? ? 48 8B B5 ? ? ? ? 0F B6 85 ? ? ? ? 88 45 ? 48 8B 41 10"),
         &self->UIContext_drawImage));
+    // todo remove this garbage.
     push(Direct(SUNSIG("HotbarRenderer::pathBuilder"),
-        SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 05 00 00 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 4D 89 C7 48 89 D3 48 89 CF 4C 89 8D ? ? ? ? 49 8B 81 A0 00 00 00 48 8B 70 F0"),
+        SUNSIG("55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 05 00 00 48 8D AC 24 80 00 00 00 48 C7 85 90 04 00 00 FE FF FF FF 4D 89 C7 48 89 D3 48 89 CF 4C 89 8D 68 04 00 00 49 8B 81 A0 00 00 00 48 8B 70 F0"),
         &self->UIHotbarPathBuilder));
-    push(Rel32(SUNSIG("HotbarRenderer::toStringCall"),
-        SUNSIG("48 89 F1 44 89 EA 41 B8 0A 00 00 00 E8 ? ? ? ? 4C 8B 85"),
-        &self->UIHotbarToString, 13, 17));
     {
         SigEntry e{};
         e.name = SUNSIG("EffectInstance fields (addEffect merge)");
         e.pattern =
             SUNSIG("44 89 49 ? 8B 72 ? 89 71 ? 0F B6 42 ? 88 41 ?");
-        e.altPattern = nullptr;
+
         e.out = &off.EffectInstance_amplifier;
         e.out2 = &off.EffectInstance_duration;
         e.resolve = SigResolve::EffectInstFields;
@@ -467,11 +430,10 @@ void SigManager::buildTable(SigEntry* t, size_t* count) const {
         &off.NS_RemoteConnector, 3));
 
     push(Off32(SUNSIG("EffectInstance::size"),
-        SUNSIG("4D 69 FC ? ? ? ? 42 8B 04 39 3B 05 ? ? ? ? 75 ?"),
+        SUNSIG("4D 69 FC ? ? ? ? 42 8B 04 39 3B 05 ? ? ? ? 75 ? 48 8B 8E 00 02 00 00"),
         &off.EffectInstance_size, 3));
 
     *count = n;
-    SUN_VMP_END();
 }
 
 bool SigManager::applyEntry(const SigEntry& e, uintptr_t match) const {
@@ -543,106 +505,27 @@ bool SigManager::applyEntry(const SigEntry& e, uintptr_t match) const {
 }
 
 void SigManager::Initialize() {
-    LOG_INFO("Initializing SigManager", "SigManager");
-
-    Level_getRuntimeActorList = 0;
-    ConnectionRequest_CurrentInput = 0;
     SigEntry table[kMaxSigs]{};
     size_t count = 0;
     buildTable(table, &count);
 
-    auto& scanner = MemoryScanner::GetInstance();
-    scanner.SetVerbose(false);
-
-    const auto t0 = Clock::now();
-
-    std::vector<std::string> names, patterns;
-    std::vector<uintptr_t> matches(count, 0);
+    std::vector<std::string> names;
+    std::vector<std::string> patterns;
     names.reserve(count);
     patterns.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        names.push_back(table[i].name);
-        patterns.push_back(table[i].pattern ? table[i].pattern : "");
+        names.emplace_back(table[i].name);
+        patterns.emplace_back(table[i].pattern ? table[i].pattern : "");
     }
+
+    std::vector<uintptr_t> matches(count, 0);
+    auto& scanner = MemoryScanner::GetInstance();
+    scanner.SetVerbose(false);
     scanner.ScanAllChunked(names, patterns, matches);
 
-    std::vector<std::string> altNames, altPatterns;
-    std::vector<size_t> altOwner;
-    std::vector<uintptr_t> altMatches;
     for (size_t i = 0; i < count; ++i) {
-        if (matches[i] == 0 && table[i].altPattern) {
-            altNames.push_back(std::string(table[i].name) + ".alt");
-            altPatterns.push_back(table[i].altPattern);
-            altOwner.push_back(i);
-        }
+        if (!applyEntry(table[i], matches[i]))
+            LOG_WARN(std::string("Signature unavailable: ") + table[i].name, "SigManager");
     }
-    if (!altPatterns.empty()) {
-        altMatches.assign(altPatterns.size(), 0);
-        scanner.ScanAllChunked(altNames, altPatterns, altMatches);
-        for (size_t k = 0; k < altOwner.size(); ++k)
-            if (altMatches[k] != 0) matches[altOwner[k]] = altMatches[k];
-    }
-
-    int total = 0, found = 0;
-    for (size_t i = 0; i < count; ++i) {
-        const SigEntry& e = table[i];
-        ++total;
-        const bool resolved = applyEntry(e, matches[i]);
-        if (resolved) ++found;
-#ifdef SUNSTEAD_LOGGING
-        if (matches[i] != 0) {
-            const uintptr_t offset = matches[i] - scanner.GetBaseAddress();
-            char buf[160];
-            std::snprintf(buf, sizeof(buf),
-                "Found signature '%s' @ 0x%llX (offset: 0x%llX)",
-                e.name,
-                static_cast<unsigned long long>(matches[i]),
-                static_cast<unsigned long long>(offset));
-            LOG_INFO(buf, "MemoryScanner");
-        } else if (e.altPattern || e.pattern) {
-            LOG_WARN(std::string("Signature unavailable '") + e.name + "' (no unique match)", "MemoryScanner");
-        }
-        if (matches[i] != 0 && !resolved)
-            LOG_WARN(std::string("Rejected signature result '") + e.name + "' (invalid resolver output)", "SigManager");
-#endif
-    }
-
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
-
-#ifdef SUNSTEAD_LOGGING
-    char summary[160];
-    std::snprintf(summary, sizeof(summary),
-        "Signature scan complete (unique matches): %d/%d resolved in %lld ms",
-        found, total, static_cast<long long>(ms));
-    LOG_INFO(summary, "SigManager");
-
-    {
-        auto& off = OffsetManager::GetInstance();
-        // %X, not std::to_string — that prints DECIMAL (0x218 -> "536"), which
-        // made a correct resolve look like a wrong offset.
-        char b[128];
-        std::snprintf(b, sizeof(b),
-            "Actor component ptrs: stateVector=0x%X aabb=0x%X rotation=0x%X",
-            off.Actor_mStateVector, off.Actor_mAABB, off.Actor_mRotation);
-        LOG_INFO(b, "SigManager");
-
-        char b2[32];
-        std::snprintf(b2, sizeof(b2), "0x%X", off.Item_mNameStrOffset);
-        LOG_INFO(std::string("Item::mName str offset = ") + b2, "SigManager");
-
-        char buf[160];
-        std::snprintf(buf, sizeof(buf),
-            "EffectInstance offs: dur=0x%X amp=0x%X noC=0x%X size=0x%X",
-            off.EffectInstance_duration, off.EffectInstance_amplifier,
-            off.EffectInstance_noCounter, off.EffectInstance_size);
-        LOG_INFO(buf, "SigManager");
-    }
-#else
-    (void)found; (void)total; (void)ms;
-#endif
-
-    // Push resolved addresses into the g_* symbols the rest of the SDK reads.
     SDKRuntime::Publish();
-
-    LOG_INFO("SigManager initialized", "SigManager");
 }

@@ -30,9 +30,6 @@ public:
         AddSetting(new BoolSetting("Always show", "Render on every screen, not just the HUD", false));
         AddSetting(new BoolSetting("Render Heads", "Draw the player's head left of the name", true));
         AddSetting(new BoolSetting("Separator", "Separate stats", true));
-        // ---- Custom self tag (appended LAST: indexes above must not move) ----
-        // While "Render Local" is on, your own tag can carry a custom name,
-        // optionally followed by the real nick in brackets: "fake (real)".
         AddSetting(new BoolSetting("Custom Self Name", "Show your own tag under a custom name", false));   // [21]
         AddSetting(new StringSetting("Self Name", "The custom name for your own tag", "sunstead"));        // [22]
         AddSetting(new BoolSetting("Show Real Name", "Append the real nick in brackets: fake (real)", true)); // [23]

@@ -35,12 +35,6 @@ Player::State g_st;
 void* g_artSrv = nullptr;    // ID3D11ShaderResourceView*
 int g_artW = 0, g_artH = 0;
 void* g_artDevice = nullptr;
-// Request generation: every Play/PlayRandom/Stop bumps it. Workers carry
-// the generation they started with and abort as soon as a newer request
-// exists — so rapid "next" presses always resolve to the LATEST track and a
-// stale worker can never kill it or overwrite its titles. (The old bool busy
-// flag silently dropped presses made during a download and could stick at
-// true forever if a worker died, bricking playback until restart.)
 std::atomic<int> g_gen{ 0 };
 std::atomic<long> g_posMs{ 0 };
 std::atomic<long> g_lenMs{ 0 };
@@ -48,14 +42,6 @@ std::atomic<int> g_volume{ 70 };
 
 const wchar_t* kAlias = L"scplay";
 
-// ---- Render-thread-owned playback ------------------------------------------
-// Every MCI call happens on the render thread inside Player::pump(). The old
-// code opened the device on a worker thread while the render thread polled
-// `status ... position` in parallel — those answers never agreed, g_posMs
-// stayed 0 and the progress bar never filled regardless of playback. Workers
-// therefore only do network work and hand audio over through g_pending;
-// cross-thread intents (stop / pause / volume / restart) arrive as one-shot
-// flags that pump() executes.
 struct Pending {
     bool valid = false;
     int gen = 0;
@@ -66,9 +52,6 @@ struct Pending {
 std::mutex g_pendMu;
 Pending g_pending;
 
-// Artwork JPEG lands in a slot too: ID3D11 resources were being created and
-// released from the download thread while the render thread was drawing the
-// very same pointer.
 std::mutex g_artMu;
 std::vector<unsigned char> g_artJpg;
 bool g_artPending = false;
@@ -107,9 +90,6 @@ std::string narrow(const std::wstring& w) {
     return s;
 }
 
-// Preset queries used when the charts feed AND every personal source are
-// unreachable. Genre-diverse on purpose (the old list was literally "wave"
-// repeated — that was the "тупо ищет wave" complaint).
 const char* kFallbackQueries[] = {
     "phonk", "cyberpunk", "future bass", "lofi beats", "deep house", "synthwave",
     "russian rap", "drum and bass", "progressive house", "trap",
@@ -130,10 +110,6 @@ bool retriesEnabled() {
     return true;
 }
 
-// Recent picks (cap 24, track ids). chartsRandom re-shuffles the SAME top-50
-// feed every call, so the same handful of chart hits kept coming back
-// ("повторяются треки"). Anything heard in this session is excluded from the
-// random picks; manual plays remember here too.
 std::mutex g_recentMu;
 std::vector<long long> g_recentIds;
 void rememberRecentId(long long id) {
@@ -150,9 +126,6 @@ bool isRecentId(long long id) {
     return false;
 }
 
-// The user's own search queries (every `.player play <query>` lands here) —
-// a wave fallback seed. With OAuth the /me likes feed takes over; without it
-// the related-track chain (seeded by the last played track) is the wave.
 std::mutex g_qMu;
 std::vector<std::string> g_userQueries;
 void rememberUserQuery(const std::string& q) {
@@ -194,9 +167,6 @@ void queueChat(const std::string& msg) {
     g_chatQueue.push_back(msg);
 }
 
-// Your profile's numeric user id for the likes feed (0 = unresolved/None).
-// The profile string persists as setting [14]; the id resolves once per
-// session on a worker thread (workerResolveProfile).
 std::atomic<long long> g_profileId{ 0 };
 std::string            g_profileName;             // display name after resolve
 std::string            g_profileResolvedFor;      // the profile string g_profileId belongs to
@@ -206,9 +176,6 @@ bool                   g_waveHintShown = false;
 
 } // namespace
 
-// --- module state access (Player::State is private; helpers live here) -----
-// NOTE: Player::State/private statics are touched only through the static
-// member functions below.
 
 Player::Player() : Module("Player", "SoundCloud now-playing widget", Category::Visual, 0) {
     AddSetting(new StringSetting("API Key", "SoundCloud api-v2 client_id (.player key <id>)", "")); // [0]
@@ -229,9 +196,6 @@ Player::Player() : Module("Player", "SoundCloud now-playing widget", Category::V
     // The personal wave: recommendations from YOUR likes (public profile) +
     // the related-track chain, with global charts only as the fallback.
     AddSetting(new BoolSetting("Personal Wave", "Feed the wave from your likes (profile) and related tracks instead of random charts", true)); // [13]
-    // Your SoundCloud profile (link or username) — the wave reads your PUBLIC
-    // likes through it. No OAuth/login needed: SoundCloud closed app
-    // registration, and public likes are open to the plain api-v2 key.
     AddSetting(new StringSetting("SoundCloud Profile", "Your soundcloud.com profile link or username (.player user <link>)", "")); // [14]
     mIsHudModule = true;
     mPosX = 24.0f;
@@ -279,9 +243,6 @@ std::string Player::tempAudioPath(int gen) {
     char tmp[MAX_PATH] = {};
     DWORD n = GetTempPathA((DWORD)sizeof(tmp), tmp);
     std::string dir = (n > 0 && n < (DWORD)sizeof(tmp)) ? tmp : ".\\";
-    // One file per request. Every track used to share a single path, so two
-    // overlapping downloads wrote the SAME file and MCI opened a half-written
-    // MP3 — which is exactly why pressing next often appeared to do nothing.
     char name[64];
     std::snprintf(name, sizeof(name), "sunstead_sc_%d.mp3", gen);
     return dir + name;
@@ -360,9 +321,6 @@ void Player::openPending() {
     g_openTick = g_anchorTick;
     g_opened = true;
     g_wasPlaying = true;
-    // Remember a track only once its audio is actually running — a failed
-    // download must never poison the Prev history — and exclude it from the
-    // random picks (the charts feed would otherwise replay it).
     {
         std::lock_guard<std::mutex> lock(g_mu);
         g_cur = p.track;
@@ -472,9 +430,6 @@ void Player::pump(bool enabled) {
         g_st.paused = true;
         g_st.playing = false;
     } else if (mode == "stopped" && g_wasPlaying) {
-        // End of track. Only roll the next one after it has actually played
-        // for a moment — a bad file that dies instantly must not spin the
-        // autoplay loop at full speed.
         const bool playedForReal = (GetTickCount64() - g_openTick) > 1500;
         g_wasPlaying = false;
         g_opened = false;
@@ -537,20 +492,12 @@ void Player::workerArtwork(std::string url) {
     g_artPending = true;
 }
 
-// Worker tail shared by search/wave/history: publish the meta, stream the
-// MP3 to its per-request temp file, then hand it to pump(). Re-checks the
-// generation at every step so a superseded worker touches nothing.
-// `pickLabel` is the wave note ("wave: similar to X") shown by openPending.
 void Player::workerTrack(SoundCloud::Track t, int gen, const char* pickLabel) {
     if (!isCurrent(gen)) return;
     setStatus(t.title.c_str(), t.artist.c_str(),
               "downloading audio...", false, false, true,
               t.durationMs, t.artworkUrl, t.isPreview);
     const std::string path = tempAudioPath(gen);
-    // Auto-retry (Retry setting): a dropped Wi-Fi socket used to end the
-    // download in one shot and playback just stopped. Up to 3 retries with a
-    // growing pause; every attempt re-checks the generation so a superseded
-    // worker aborts instead of fighting a newer request.
     bool downloaded = false;
     const int maxAttempts = retriesEnabled() ? 4 : 1;   // 1 try + 3 retries
     for (int attempt = 0; attempt < maxAttempts; ++attempt) {
@@ -604,15 +551,6 @@ void Player::workerPlay(std::string key, std::string query, int gen) {
     workerTrack(std::move(r.track), gen);
 }
 
-// THE WAVE: real recommendations instead of raw search. Source order (first
-// playable non-recent pick wins, each source gets up to 3 draws):
-//   1) /users/{id}/likes/tracks — tracks YOU liked, off your public profile
-//      (`.player user <link>`; the id resolves once per session, no OAuth);
-//   2) tracks/{id}/related — SoundCloud's own recommendation graph, seeded
-//      by the last track you actually played, so the station follows your
-//      taste as the session goes;
-//   3) a random re-roll over your own past search queries;
-//   4) global charts / preset wave queries (the last resort).
 void Player::workerRandom(std::string key, int gen) {
     if (!isCurrent(gen)) return;
     setStatus("Searching...", "the wave...", "", false, false, false, 0, {}, false);
@@ -720,10 +658,6 @@ std::string Player::GetKey() {
     return {};
 }
 
-// Newest request wins: bump the generation (any in-flight worker becomes
-// stale), ask pump() to stop the current audio this frame, then resolve on a
-// worker thread. Nothing here touches MCI, so it is safe from a command or a
-// render thread alike.
 static void beginRequest() {
     g_gen.fetch_add(1);
     g_closeReq.store(true);
@@ -862,9 +796,6 @@ void Player::SetProfile(const std::string& urlOrName) {
     std::thread([urlOrName]() { workerResolveProfile(urlOrName); }).detach();
 }
 
-// Resolve a stored/copied profile string to its numeric user id once per
-// session. Chat output is queued for the render thread (displayClientMessage
-// is not safe to call from a network worker).
 void Player::workerResolveProfile(std::string urlOrName) {
     struct Guard { ~Guard() { g_profileResolving.store(false); } } guard;
     SoundCloud::UserInfo u = SoundCloud::resolveUser(GetKey(), urlOrName);
@@ -925,17 +856,8 @@ static std::string fmtMs(long ms) {
 }
 
 void Player::OnRender() {
-    // MCI is driven from here — BEFORE any visibility gate, so the device
-    // still opens, advances and finishes while no HUD screen is showing.
-    // (This used to be a `status ... position` poll scattered around the
-    // worker thread, which is why the bar never moved.)
     pump(IsEnabled());
 
-    // Appear/disappear driver (TargetHUD discipline): the exponential approach
-    // keeps producing frames while the value sits inside (0,1) — that renders
-    // BOTH the fade-in on enable AND the fade-out after disable. The old code
-    // early-returned on !IsEnabled() before drawing anything, so toggling and
-    // dragging the plate had no animation at all.
     float dtA = ImGui::GetIO().DeltaTime;
     if (dtA <= 0.0f || dtA > 0.25f) dtA = 1.0f / 60.0f;
     mAppear += ((IsEnabled() ? 1.0f : 0.0f) - mAppear) * std::min(1.0f, dtA * 9.0f);
@@ -1001,10 +923,6 @@ void Player::OnRender() {
     const float fsTitle = 17.0f * scale;
     const float fsSmall = 13.0f * scale;
 
-    // The note is the only place transport feedback surfaces (MCI open/play
-    // failure, download failure, "downloading audio..."). Put it in the artist
-    // slot while it is meaningful, so a next-press that does nothing is
-    // diagnosable on screen instead of looking like a dead button.
     const bool noteIsError = s.note.rfind("MCI", 0) == 0 ||
                              s.note.rfind("audio download", 0) == 0 ||
                              s.note.rfind("set .player", 0) == 0;
@@ -1025,12 +943,6 @@ void Player::OnRender() {
     // the control row never collide (3x30 + 2x6 buttons + ~75px of times).
     float colW = std::max(textW, 250.0f * scale);
 
-    // Row layout is driven by MEASURED line heights, not ad-hoc gaps, so no
-    // element can overlap the next at any scale:
-    //   row0 title (fsTitle)  -> 6px gap
-    //   row1 artist (fsSmall) -> 8px gap
-    //   row2 controls (28px)  -> 10px gap
-    //   row3 progress bar (Bar Height, min 6px)
     const float ctrlH = 28.0f * scale;
     const float barH = barHBase * scale;
     const float contentH = fsTitle + 6.0f * scale + fsSmall + 8.0f * scale +
@@ -1060,9 +972,6 @@ void Player::OnRender() {
 
     // ---- Fade/scale driver (TargetHUD plate spring) ----
     const float a = mAppear;
-    // Appear: 0.88 -> 1 with an ease-out-back overshoot; disappear: smoothstep
-    // down to 0.94 while the alpha follows. Center-pivot zoom so nothing
-    // crawls out of the plate while it animates.
     float zoom;
     if (IsEnabled()) {
         const float t = std::min(1.0f, a);
@@ -1099,9 +1008,6 @@ void Player::OnRender() {
     if (shadowOn)
         ImRenderUtils::fillShadowRectangle(rect, ImColor(0, 0, 0), shadowStr * a, roundingPx, shadowSz);
     ImRenderUtils::fillRectangle(rect, ImColor(12, 12, 15, (int)(255.0f * dim * a)), 1.0f, roundingPx);
-    // ---- TargetHUD-style TOP SHEEN: a white gradient fading down from the
-    //      top edge — the "3D lit from above" read. Rounded so it stays
-    //      inside the plate corners.
     ImRenderUtils::fillGradientRounded(dl, rect,
         ImVec4(1, 1, 1, 0.10f * a), ImVec4(1, 1, 1, 0.0f),
         roundingPx, 0, /*vertical=*/true);
@@ -1180,9 +1086,6 @@ void Player::OnRender() {
                                 : ImColor(255, 255, 255, (int)(40 * a));
         dl->AddRect(ImVec2(r.x, r.y), ImVec2(r.z, r.w), edgeCol, bRad, 0, 1.0f);
     };
-    // Icons redrawn on a shared 9px-high grid centered in the capsule: wider
-    // glyph spread, thicker strokes with round caps — the old cramped 5px
-    // triangles read as smudges inside the pads.
     auto gSkipFwd = [&](const ImVec4& r, ImU32 col) {
         const float gx = (r.x + r.z) * 0.5f, gy = (r.y + r.w) * 0.5f;
         const float h = 5.0f * scale, u = scale;

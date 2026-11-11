@@ -44,14 +44,6 @@ ChestStealer::ChestStealer()
     // Default 5: at 50ms delay a 27-slot chest finishes ~270ms per pass instead of 1.35s
     AddSetting(new NumberSetting("Slots Per Tick", "How many slots to autoplace per delay tick", 5.f, 1.f, 27.f, 1.f));
 
-    // ---- anti-desync block --------------------------------------------------
-    // The old cadence fired a fixed-delay burst, moved every slot in a strict
-    // 0..N order, and tryExit()'d the moment a scan said the chest was empty.
-    // Depending on the response latency of the last ItemStackRequest the
-    // server could still be validating the batch when it saw the close, and it
-    // CANCELS / desyncs the tail slots. The controls below are only appended
-    // so the positional getters above stay stable (exactly like
-    // CounterStyle.h). The names must survive the Edit dump (mSettings order).
     AddSetting(new BoolSetting("Take Random Slot First", "First slot of the burst is drawn randomly (spread robustness check)", true)); // [8]
     AddSetting(new NumberSetting("Batch Size", "Ops per packet batch. Lower = closer to per-slot broadcasts, higher = fewer packet churn", 1.f, 1.f, 27.f, 1.f)); // [9]
     AddSetting(new NumberSetting("Close Delay", "Post-empty wait (ms) before tryExit — covers the last request round-trip", 150.f, 0.f, 2000.f, 1.f)); // [10]
@@ -79,9 +71,6 @@ uint64_t ChestStealer::getDelayMs() const {
     static std::mt19937 rng{ std::random_device{}() };
     std::uniform_real_distribution<float> dist(lo, hi);
     float base = dist(rng);
-    // Extra jitter on top (Randomization %) — a constant delay is trivially
-    // fingerprinted by per-container timing; the multiplier re-draws every
-    // orbit so the cadence is never a fixed frame.
     float randPct = 0.f;
     if (mSettings.size() > 11)
         randPct = static_cast<const NumberSetting*>(mSettings[11])->mValue;
@@ -160,9 +149,6 @@ void ChestStealer::chatDebug(const std::string& msg) {
 }
 
 void ChestStealer::dumpChestDebug(void* cscRaw, const std::string& sn) {
-    // Debug-only. Everything below touches native memory, so normal users never
-    // execute any of it — the previous version ran a blind ContainerManagerModel
-    // vtable probe on every chest open regardless of this setting.
     if (!isDebug()) return;
 
     std::ostringstream oss;
@@ -209,10 +195,6 @@ void ChestStealer::dumpChestDebug(void* cscRaw, const std::string& sn) {
         return;
     }
 
-    // Only non-empty slots are logged, and the whole dump goes out as a few
-    // lines instead of one file write per slot. The old per-slot version cost
-    // roughly a second of stall on a 27-slot chest (a log flush and an
-    // item-name offset probe for every empty slot).
     int filled = 0;
     std::ostringstream items;
     for (int i = 0; i < mMaxSlots; ++i) {
@@ -291,25 +273,12 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
         chatDebug("FATAL: handleAutoPlace=0");
         return;
     }
-    // Without the family marker we cannot prove the controller's type, and a
-    // wrong guess is an uncatchable __fastfail inside handleAutoPlace rather than
-    // a catchable fault. Refuse to steal instead of gambling.
     if (!g_ContainerScreenController_getSelectedSlotInfo) {
         chatDebug("FATAL: CSC type marker unresolved — refusing to call handleAutoPlace");
         return;
     }
     if (mClosed) return;
 
-    // THE fix: the screen name only tells us what the UI is called. This asks the
-    // object itself whether it is really a ContainerScreenController. Chest-named
-    // screens whose controller is some other class (and container screens that are
-    // still being torn down) are now skipped instead of crashing the game.
-    //
-    // The reason is logged ONCE per container open. The old gate
-    // (`mLastSn == sn`) was structurally dead: mLastSn is only assigned after
-    // this check passes, so on the very first frame of the very first chest it
-    // was always empty, the reject line never fired, and ChestStealer produced
-    // zero output — indistinguishable from "the module does nothing".
     if (!mRejectedLogged) {
         SDK::ContainerScreenController::RejectReason why =
             SDK::ContainerScreenController::RejectReason::kAccepted;
@@ -326,9 +295,6 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
                 (unsigned long long)g_ContainerScreenController_getSelectedSlotInfo,
                 (unsigned long long)g_ContainerScreenController_handleAutoPlace);
             logAlways(line);
-            // If the controller is simply null this frame (screen mid-teardown),
-            // stay quiet in chat but keep the log line; clear the flag so a real
-            // controller later still gets its own one-shot report.
             if (why == SDK::ContainerScreenController::RejectReason::kNullController)
                 mRejectedLogged = false;
             if (isDebug())
@@ -369,14 +335,7 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
             + "ms burst=" + std::to_string(getSlotsPerTick()));
     }
 
-    // Once the container is empty, drop to a slow idle poll instead of the steal
-    // cadence. Standing in an emptied chest used to cost a full 27-slot native
-    // scan plus a log line every 50 ms — the looting stutter. Still polls, so
-    // items dropped in by someone else are picked up.
     if (mFinished) {
-        // Close When Done + Close Delay: once the container reads empty and
-        // the post-empty countdown has passed, exit. Until then we idle-poll —
-        // no more native scans than needed on a static screen.
         if (closeWhenDone() && mCloseAfterMs > 0 && now >= mCloseAfterMs) {
             auto* cx = reinterpret_cast<SDK::ContainerScreenController*>(cscRaw);
             if (cx) cx->tryExit();
@@ -401,10 +360,6 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
     const bool canSeeItems = g_ContainerScreenController_getItemStack != 0;
 
     if (canSeeItems) {
-        // ONE scan per tick. The previous version scanned twice (once to steal,
-        // once to count what was left) and kept scanning forever after the chest
-        // was already empty — 54 native calls plus a log write every 50 ms, which
-        // is exactly the stutter seen while looting.
         int filled[54];
         int nFilled = 0;
         for (int i = 0; i < mMaxSlots && nFilled < 54; ++i) {
@@ -418,11 +373,6 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
             if (mFinished) return;              // already reported; stay in idle poll
             if (++mEmptyTicks < 2) return;      // one empty look can be a pending ack
 
-            // CloseDelay arm: the LAST request just landed visually empty
-            // (the server may not have ACK'd yet); hand the chest its
-            // post-empty grace period before tryExit. Without this the server
-            // could still be validating the tail batch when we close and it
-            // CANCELS / desyncs the last slots.
             mFinished = true;
             mStealing = false;
             const AntiDesyncCfg adc = getAntiDesync();
@@ -438,20 +388,6 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
         mFinished = false;
         mCloseAfterMs = 0;
 
-        // ---- slot order and batching (anti-desync) --------------------------
-        // Strict 0..N in lockstep cadence is trivially fingerprinted, and a
-        // single 27-batch handed to the ItemStackRequest queue the same tick
-        // had the server rejecting mid-batch on high-throughput worlds.
-        // Settings (all appended; pick them up by name):
-        //   Batch Size        ops per burst before we wait another delay tick.
-        //   Take Random Slot First  the first tick opens on a random slot, so
-        //                     the leading slot is not always index 0.
-        //   Random Order      freshly re-shuffle the filled slot list every
-        //                     pass, so consecutive passes never have the same
-        //                     cadence or order.
-        //   Randomization     ±% jitter on this burst's delay (per-decode).
-        // This does NOT change the underlying semantics of any single move; the
-        // server sees them in a randomized but still self-consistent sequence.
         const AntiDesyncCfg adc = getAntiDesync();
         static std::mt19937 rng{ std::random_device{}() };
         const bool shuffleAll = adc.randomizedOrder > 0;
@@ -472,9 +408,6 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
                 orderBuf[j] = t;
             }
         } else if (firstRandom && nFilled > 1) {
-            // With Random Order off but Take Random Slot First on, draw only the
-            // head of the pass — pieces preserved otherwise, so the pass still
-            // streams linearly.
             std::uniform_int_distribution<int> di(0, nFilled - 1);
             int j = di(rng);
             int t = orderBuf[0];
@@ -482,9 +415,6 @@ void ChestStealer::trySteal(void* cscRaw, const std::string& sn) {
             orderBuf[j] = t;
         }
 
-        // Batch Size gate: the packet sender sees <Batch Size> autoplaces per
-        // burst — never the full pass — which prevents the ItemStackRequest
-        // queue from bursting on the server in a way it then rejects mid-batch.
         const int batchCap = adc.batchSize > 0 ? adc.batchSize : 1;
         const int effective = std::min(burst, batchCap);
 

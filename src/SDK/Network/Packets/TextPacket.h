@@ -20,17 +20,6 @@ enum class TextPacketType : unsigned char {
     TextObjectAnnouncement = 11,
 };
 
-// Wire layout, verified against the 1.26.50.04 build. createPacket(9) ->
-// sub_1416B1D20 allocates 264 bytes and returns an all-empty body with
-// discriminator 0; the real chat body is built by
-// ClientInstanceScreenModel::sendChatMessage
-// (sub_141885B70 -> sub_143559070 -> sub_143559680) — field offsets are the
-// struct's below. The +0xE8 discriminator selects how +0xA8/+0xC8 are read:
-//   disc 0 — "message only":   +0xA8 is the message
-//   disc 1 — "author+message": +0xA8 = author, message at +0xC8  <- what chat sends
-//   disc 2 — "message+params": +0xA8 = message, params at +0xC8
-// CAUTION: base ctor sub_143555560 initialises the packet from a temporary
-// "formatter" object — its src offsets are the temporary's, NOT the packet's.
 class TextPacket : public Packet {
 public:
     static constexpr PacketID ID = PacketID::Text;

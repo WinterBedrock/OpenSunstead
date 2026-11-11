@@ -24,38 +24,15 @@
 #include "../../Utils/MiscUtils/KeyboardUtils.hpp"
 #include "../../Utils/MiscUtils/MathUtils.hpp"
 
-// ---------------------------------------------------------------------------
-// Minimal ClickGUI in the Rise 6.9.5 "standard" visual language:
-//
-//  * one flat dark panel (Rise UIColors BACKGROUND 23,26,33), thin border,
-//    tight shadow — no gradient glass, no accent hairline, no sheen, no
-//    ambient glow blobs;
-//  * a plain text sidebar (no icons, no sliding gradient highlight);
-//  * a TWO-COLUMN GRID of Rise module cards (~40 px each): name in white /
-//    theme accent when enabled, one-line gray description always visible,
-//    hover = a flat darkening overlay. Left click toggles, right click
-//    expands the settings inline inside the card.
-//
-// Two rules the old builds broke and this one keeps:
-//
-//  * Nothing scales geometrically during the open/close animation. Font sizes
-//    derived from an easing value can reach 0 while closing, and ImGui asserts
-//    on `font_size > 0` inside AddText. The entrance is alpha plus a fixed
-//    pixel slide instead.
-//  * The D2D backdrop blur paints an OPAQUE rect onto the backbuffer at replay
-//    time, so it is emitted once, before any geometry, on the background list.
-// ---------------------------------------------------------------------------
-
 namespace {
 
-// Panel metrics at UI Scale 1.0.
 constexpr float kPanelW = 960.0f;
 constexpr float kPanelH = 690.0f;
 constexpr float kRailW  = 164.0f;
 constexpr float kHeadH  = 52.0f;
 constexpr float kPad    = 14.0f;
 
-// Palette (Rise UIColors, normalised).
+
 constexpr ImVec4 kPanel  { 23.0f  / 255.0f, 26.0f  / 255.0f, 33.0f  / 255.0f, 1.0f };
 constexpr ImVec4 kTextHi { 1.000f, 1.000f, 1.000f, 1.0f };
 constexpr ImVec4 kTextMid{ 0.700f, 0.700f, 0.720f, 1.0f };
@@ -64,31 +41,21 @@ constexpr ImVec4 kTextLo { 0.450f, 0.450f, 0.470f, 1.0f };
 const char* const kCategoryNames[] = { "Visual", "Combat", "Movement", "Player", "Misc" };
 constexpr int kCategoryCount = 5;
 
-// Category glyphs from the icon font (FontAwesome private-use codepoints,
-// written as byte escapes so the source stays encoding-proof). [0] is the
-// Panel rail's "All" entry; [1..5] map to the five categories above and are
-// also what the Columns headers draw, so both layouts share one icon set.
 const char* const kRailGlyphs[] = {
     "\xEF\x82\xA8", "\xEF\x80\xAD", "\xEF\x82\xAB", "\xEF\x82\x95", "\xEF\x80\xAC", "\xEF\x82\xA6"
 };
 
-// --- persistent UI state ---------------------------------------------------
-// All of it is file-static: the module object is owned by ModuleManager and
-// recreated only on inject, and the render pass is single-threaded.
 
-float  g_open      = 0.0f;   // 0..1 raw open progress
-float  g_ease      = 0.0f;   // eased open progress — what alphas/offsets use
-float  g_bloom     = 0.0f;   // 0..1 Bloom-zoom progress — runs ~2x faster than
-                             // g_open and SNAPS to 1 so the overshoot never
-                             // keeps drifting a second after the entrance
-float  g_panelX    = 0.0f;   // top-left of the panel (persisted)
+float  g_open      = 0.0f;
+float  g_ease      = 0.0f;
+float  g_panelX    = 0.0f;   // Unscaled, persisted top-left of the panel.
 float  g_panelY    = 0.0f;
 bool   g_placed    = false;  // false until a position has been chosen/loaded
 bool   g_dragging  = false;
 float  g_dragDX    = 0.0f;
 float  g_dragDY    = 0.0f;
 
-int    g_tab       = 0;      // 0 = modules, 1 = settings, 2 = configs, 3 = changelog
+int    g_tab       = 0;      // 0 = modules, 1 = settings, 2 = configs, 3 = themes, 4 = changelog
 int    g_category  = -1;      // active rail entry within the modules tab (-1 = All)
 float  g_railEase  = 1.0f;   // animated rail selection index
 float  g_tabFade   = 1.0f;   // content cross-fade after a tab/category switch
@@ -161,7 +128,127 @@ ImColor mix(const ImColor& a, const ImColor& b, float t) {
                    a.Value.w + (b.Value.w - a.Value.w) * t);
 }
 
-bool over(const ImVec4& r) { return ImRenderUtils::isMouseOver(r); }
+struct UiTransform {
+    bool enabled = false;
+    ImVec2 pivot{ 0.0f, 0.0f };
+    ImVec2 slide{ 0.0f, 0.0f };
+    float zoom = 1.0f;
+    float fade = 1.0f;
+
+    ImVec2 toScreen(const ImVec2& p) const {
+        return enabled
+            ? ImVec2(pivot.x + (p.x - pivot.x) * zoom + slide.x,
+                     pivot.y + (p.y - pivot.y) * zoom + slide.y)
+            : p;
+    }
+
+    ImVec2 toLogical(const ImVec2& p) const {
+        if (!enabled) return p;
+        const float invZoom = 1.0f / std::max(0.01f, zoom);
+        return ImVec2(pivot.x + (p.x - slide.x - pivot.x) * invZoom,
+                      pivot.y + (p.y - slide.y - pivot.y) * invZoom);
+    }
+
+    ImVec4 toScreen(const ImVec4& r) const {
+        const ImVec2 p0 = toScreen(ImVec2(r.x, r.y));
+        const ImVec2 p1 = toScreen(ImVec2(r.z, r.w));
+        return ImVec4(p0.x, p0.y, p1.x, p1.y);
+    }
+};
+
+UiTransform g_uiTransform;
+
+ImVec2 guiMousePos() {
+    return g_uiTransform.toLogical(ImRenderUtils::getMousePos());
+}
+
+bool over(const ImVec4& r) {
+    const ImVec2 p = guiMousePos();
+    return p.x >= r.x && p.y >= r.y && p.x <= r.z && p.y <= r.w;
+}
+
+struct UiDrawRange {
+    ImDrawList* dl = nullptr;
+    int firstVertex = 0;
+    int firstElement = 0;
+    int firstCommand = 0;
+
+    explicit UiDrawRange(ImDrawList* drawList) : dl(drawList) {
+        if (!dl) return;
+        firstVertex = dl->VtxBuffer.Size;
+        for (const ImDrawCmd& cmd : dl->CmdBuffer) firstElement += cmd.ElemCount;
+        firstCommand = dl->CmdBuffer.Size;
+    }
+
+    void finish(float fade = 1.0f) const {
+        if (!dl) return;
+        const UiTransform& tr = g_uiTransform;
+        for (int i = firstVertex; i < dl->VtxBuffer.Size; ++i) {
+            ImDrawVert& v = dl->VtxBuffer[i];
+            v.pos = tr.toScreen(v.pos);
+            const ImU32 oldAlpha = (v.col >> IM_COL32_A_SHIFT) & 0xFFu;
+            const ImU32 newAlpha = static_cast<ImU32>(
+                static_cast<float>(oldAlpha) * std::clamp(fade, 0.0f, 1.0f) + 0.5f);
+            v.col = (v.col & ~(0xFFu << IM_COL32_A_SHIFT)) |
+                    (newAlpha << IM_COL32_A_SHIFT);
+        }
+
+        // Clipping stays in logical coordinates while drawing, then every
+        // submitted command receives the same transform as its vertices.
+        int element = 0;
+        for (int i = 0; i < dl->CmdBuffer.Size; ++i) {
+            ImDrawCmd& cmd = dl->CmdBuffer[i];
+            const int end = element + cmd.ElemCount;
+            // ImGui can append vertices to an empty preceding command. Never
+            // change the clip of a command that already contained geometry.
+            const bool mergedEmptyCommand = element >= firstElement && end > firstElement;
+            if (i >= firstCommand || mergedEmptyCommand) {
+                cmd.ClipRect = tr.toScreen(cmd.ClipRect);
+                if (cmd.UserCallback == D2D::blurCallback ||
+                    cmd.UserCallback == D2D::blurCallbackOptimized) {
+                    auto* blur = static_cast<BlurCallbackData*>(cmd.UserCallbackData);
+                    if (blur) {
+                        if (blur->clipRect) blur->clipRect = tr.toScreen(*blur->clipRect);
+                        blur->rounding *= tr.enabled ? tr.zoom : 1.0f;
+                        blur->strength *= std::clamp(fade, 0.0f, 1.0f);
+                    }
+                }
+            }
+            element = end;
+        }
+    }
+};
+
+// Native ImGui widgets read the raw cursor, so give them the same logical space
+// as the custom widgets and suppress their mouse capture during the close fade.
+struct ScopedGuiPointer {
+    ImGuiIO& io;
+    ImVec2 savedPos;
+    bool savedDown[IM_ARRAYSIZE(io.MouseDown)];
+    bool savedClicked[IM_ARRAYSIZE(io.MouseClicked)];
+
+    explicit ScopedGuiPointer(bool live) : io(ImGui::GetIO()), savedPos(io.MousePos) {
+        for (int i = 0; i < IM_ARRAYSIZE(io.MouseDown); ++i) {
+            savedDown[i] = io.MouseDown[i];
+            savedClicked[i] = io.MouseClicked[i];
+        }
+        io.MousePos = live ? guiMousePos() : ImVec2(-FLT_MAX, -FLT_MAX);
+        if (!live) {
+            for (int i = 0; i < IM_ARRAYSIZE(io.MouseDown); ++i) {
+                io.MouseDown[i] = false;
+                io.MouseClicked[i] = false;
+            }
+        }
+    }
+
+    ~ScopedGuiPointer() {
+        io.MousePos = savedPos;
+        for (int i = 0; i < IM_ARRAYSIZE(io.MouseDown); ++i) {
+            io.MouseDown[i] = savedDown[i];
+            io.MouseClicked[i] = savedClicked[i];
+        }
+    }
+};
 
 // Rounded fill with an explicit alpha multiplier, on a caller-chosen list.
 void fill(ImDrawList* dl, const ImVec4& r, const ImVec4& c, float a, float round,
@@ -176,13 +263,6 @@ void stroke(ImDrawList* dl, const ImVec4& r, const ImVec4& c, float a, float rou
     dl->AddRect(ImVec2(r.x, r.y), ImVec2(r.z, r.w), col32(c, a), round, flags, thickness);
 }
 
-// Vertical two-stop gradient inside a rounded silhouette.
-//
-// This delegates to ImRenderUtils::fillGradientRounded, which tints the vertices
-// of a single rounded rect. The obvious alternative — AddRectFilledMultiColor
-// inside a PushClipRect — cannot work: the multi-colour quad has square corners
-// and the clip is a rectangular scissor, so the corner pixels the rounding
-// carved out get painted back in. That is the "square under the round corner".
 void gradientV(ImDrawList* dl, const ImVec4& r, const ImVec4& top, const ImVec4& bottom,
                float aTop, float aBottom, float round, ImDrawFlags flags = 0) {
     ImRenderUtils::fillGradientRounded(dl, r, ImVec4(top.x, top.y, top.z, aTop),
@@ -200,12 +280,6 @@ void gradientH(ImDrawList* dl, const ImVec4& r, const ImColor& left, const ImCol
         round, flags, /*vertical=*/false);
 }
 
-// Diagonal two-stop gradient (top-left -> bottom-right) inside a rounded
-// silhouette, WITH alpha travel: fills a white rounded rect, then rewrites the
-// fresh vertices' colours by their projection onto the diagonal, multiplying
-// by each vertex's existing alpha so the AA fringe survives. ImGui's own
-// ShadeVertsLinearColorGradientKeepAlpha keeps a UNIFORM alpha, which cannot
-// express a glaze fading out halfway down a button.
 void shadeDiag(ImDrawList* dl, const ImVec4& r, const ImVec4& c0, const ImVec4& c1,
                float round, ImDrawFlags flags = 0) {
     if (r.z - r.x < 0.5f || r.w - r.y < 0.5f) return;
@@ -227,10 +301,6 @@ void shadeDiag(ImDrawList* dl, const ImVec4& r, const ImVec4& c0, const ImVec4& 
     }
 }
 
-// shadeDiag with a leading WIPE: `wipe` 0..1 sweeps the fill in along its own
-// diagonal (top-left first, soft 0.15 frontier), so an enabling module's
-// highlight flows across the row instead of fading in uniformly — that uniform
-// fade is what made the enabled state read as "teleporting".
 void shadeDiagWipe(ImDrawList* dl, const ImVec4& r, const ImVec4& c0, const ImVec4& c1,
                    float wipe, float round, ImDrawFlags flags = 0) {
     if (r.z - r.x < 0.5f || r.w - r.y < 0.5f) return;
@@ -254,28 +324,6 @@ void shadeDiagWipe(ImDrawList* dl, const ImVec4& r, const ImVec4& c0, const ImVe
     }
 }
 
-// THE enabled-state fill for Columns, both styles: ONE continuous diagonal
-// gradient sampled from `space` (the whole menu's bounding box), so every
-// enabled row in every column is a slice of a single flowing sheet — not an
-// identical private copy per button.
-//
-// Every colour here comes from the CURRENT THEME palette — there is not a
-// single hardcoded hue in this function. The sheet is deliberately NOT the
-// raw palette laid out in a row, though: each vertex blends TWO phase-shifted
-// samples of the same palette cycle that drift against each other along the
-// diagonal, with the blend weight itself waving on a third, slower phase — so
-// the colour at any point lands BETWEEN palette stops and keeps evolving and
-// the sheet reads as liquid colour interplay. The pattern repeats twice across
-// the menu diagonal and the whole thing slowly travels along it.
-//
-// All clocks are slow: the palette plays on a slowed per-frame LUT (see
-// DrawColumns), the drift is ~one cycle per 16s, and the twin sheen bands take
-// ~10s to cross the menu. `lit` < 1 wipes the fill in along the ROW's own
-// diagonal when a module toggles; `nowMs` is sampled once per frame so every
-// row of the sheet shares one timestamp (no mid-frame seam). `fullWash`
-// flattens the alpha falloff for Clean's full-width surface wash (Machined
-// keeps a diagonal luminance drop for button depth). `lut`/`lutN` supply the
-// pre-sampled palette (one settings walk per frame instead of one per vertex).
 void shadeThemedSheet(ImDrawList* dl, const ImVec4& r, const ImVec4& space,
                       float lit, float sA, float span, uint64_t nowMs,
                       float round = 0.0f, ImDrawFlags flags = 0,
@@ -297,9 +345,6 @@ void shadeThemedSheet(ImDrawList* dl, const ImVec4& r, const ImVec4& space,
     // Diagonal drift of the whole pattern, in palette cycles (~16s per cycle).
     const float drift = clockMs * 0.00006f;
 
-    // Sheens: a soft bright band sweeping the diagonal plus a wider, fainter
-    // counter-sweep. Deliberately meditative — roughly ten seconds per pass
-    // — the old rates visibly hurried the sparkle across the menu.
     const float sheenRate = 0.00010f;
     const float sheenSpan = 1.4f;
     const float sheenP = std::fmod(clockMs * sheenRate, 1.0f) * sheenSpan - 0.2f;
@@ -327,10 +372,6 @@ void shadeThemedSheet(ImDrawList* dl, const ImVec4& r, const ImVec4& space,
         if (k <= 0.0f) { v.col = 0; continue; }
         const float keepA = static_cast<float>((v.col >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
 
-        // Two counter-drifting, phase-shifted samples of the SAME theme cycle
-        // at two spatial repetitions across the menu diagonal, blended by a
-        // third, even slower wave: colour interplay instead of the raw
-        // palette sequence, with a clear repeat and a slow diagonal flow.
         const float u = st * 2.0f;
         const ImColor cA = samplePal(u + drift);
         const ImColor cB = samplePal(u - drift * 0.8f + 0.37f);
@@ -345,9 +386,6 @@ void shadeThemedSheet(ImDrawList* dl, const ImVec4& r, const ImVec4& space,
         const float s02 = std::clamp(1.0f - dBand2 / (sheenW * 2.4f), 0.0f, 1.0f);
         const float boost2 = s02 * s02 * 0.22f;
 
-        // Both sheens brighten the palette TOWARD WHITE. Tinting toward a
-        // fixed hue would fight the theme — the old build's blue-tinted
-        // sparkle made every theme read bluish.
         const float lift = boost + boost2 * 0.5f;
         const float cr = cc.Value.x + (1.0f - cc.Value.x) * lift;
         const float cg = cc.Value.y + (1.0f - cc.Value.y) * lift;
@@ -436,7 +474,7 @@ namespace {
 
 struct Ctx {
     ImDrawList* dl = nullptr;
-    float   a = 1.0f;          // master alpha (open animation)
+    float   a = 1.0f;          // local alpha; the window fade is applied by UiDrawRange
     float   dt = 0.0f;
     bool    live = false;      // accept input this frame
     bool    lmb = false;       // left click edge
@@ -449,15 +487,11 @@ struct Ctx {
     float   rowH = 34.0f;
     float   glow = 1.0f;
     bool    shadow = true;
+    float   shadowK = 1.0f;   // multiplier for the Shadow Strength setting
     bool    tooltips = true;
     ImFont* font = nullptr;
     ImFont* bold = nullptr;
 
-    // Palette tokens. The Panel leaves these at their dark-surface defaults;
-    // Columns overwrites them for its light paper surface, so the same row
-    // helpers render correctly on either background. `tint` is the neutral
-    // overlay (hover wash, pills, slider track) and `hair` the 1px borders —
-    // white-on-black and black-on-white respectively.
     ImVec4 ink    { 0.925f, 0.937f, 0.969f, 1.0f };
     ImVec4 inkMid { 0.588f, 0.620f, 0.690f, 1.0f };
     ImVec4 inkLo  { 0.400f, 0.427f, 0.494f, 1.0f };
@@ -468,45 +502,28 @@ struct Ctx {
     float  plateA = 0.28f;         // how dark the dropdown recess is
     bool   light  = false;         // light surface: text goes on top of fills
 
-    // Columns gradient sheet state (set once per frame by DrawColumns):
-    // gradSpan = the palette period stretched across the menu-wide diagonal,
-    // gradMs = the frame's single timestamp so every row shares one sample.
     float    gradSpan = 900.0f;
     uint64_t gradMs   = 0;
-    // Per-frame palette LUT for the sheet (sampled once in DrawColumns at a
-    // slowed clock) and the menu-wide bounding box the sheet spans. Both stay
-    // null in the Panel, whose widgets never touch the sheet.
     const ImColor* gradLut   = nullptr;
     int            gradLutN  = 0;
     const ImVec4*  gradSpace = nullptr;
-    // Columns flyout bloom: while bloomK < 1 the settings rows collapse toward
-    // bloomMid (an absolute Y), so the whole dropdown expands vertically from
-    // its centre line as ONE unit instead of cascading row by row.
     float bloomK   = 1.0f;
     float bloomMid = 0.0f;
     // Columns pill slider (rounded trough + sheet fill + knob) instead of the
     // Panel's hairline underline. Never set by the Panel.
     bool  colSlider    = false;
-    // Settings-body reveal: wellWipe < 1 sweeps the recess in from its top-left
-    // corner; cornerReveal makes the rows settle diagonally instead of the
-    // sideways zigzag; noWells drops the dark recess entirely (Clean flyout —
-    // the settings there are a dropdown fused with the column, not a window).
     float wellWipe     = 1.0f;
     bool  cornerReveal = false;
     bool  noWells      = false;
     bool  columnsClean = false;
-    // Set by DrawColumns for BOTH looks. An enum opens as a plain list under
-    // its row, inside the column — the rounded plate and the dark settings
-    // well are the Panel dropdown window, and painting them here is what cut
-    // a long settings list in half.
     bool  columnsBody  = false;
 };
 
 void captureTip(const Ctx& c, const ImVec4& r, const std::string& desc) {
     if (!c.live || !c.tooltips || desc.empty() || !over(r)) return;
     g_tip = desc;
-    const ImVec2 mp = ImGui::GetMousePos();
-    g_tipPos = ImVec2(mp.x + 16.0f, mp.y + 18.0f);
+    const ImVec2 mp = guiMousePos();
+    g_tipPos = ImVec2(mp.x + 16.0f * c.scale, mp.y + 18.0f * c.scale);
     g_tipShow = true;
 }
 
@@ -538,19 +555,11 @@ void drawToggle(const Ctx& c, const ImVec4& r, float on, float hover) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Setting rows.
-//
-// Animation state is advanced ONCE per frame in tickAnims(), before anything is
-// measured, so the height a row reports and the height it draws can never
-// disagree — that mismatch is what made the old menu's rows overlap mid-reveal.
+// Setting rows. Animation is advanced before measuring so layout and drawing use
+// the same expanded height.
 // ---------------------------------------------------------------------------
 namespace {
 
-// `bodyOpen` is whether the settings this module owns are actually on screen.
-// For a module card that is `showSettings`; for the panel's own settings, drawn
-// in the Settings tab, it is always true. Gating the dropdown reveal on
-// `showSettings` alone is what kept Settings-tab dropdowns permanently shut —
-// nothing ever sets showSettings on the ClickGUI module.
 void tickAnims(Module* mod, float dt, bool bodyOpen) {
     const float openTarget = mod->showSettings ? 1.0f : 0.0f;
     const float openSpeed  = std::clamp(dt * (mod->showSettings ? 12.0f : 15.0f), 0.0f, 1.0f);
@@ -585,6 +594,11 @@ void tickAnims(Module* mod, float dt, bool bodyOpen) {
 float optionHeight(const Ctx& c) { return c.rowH * 0.80f; }
 float pickerHeight(const Ctx& c) { return 128.0f * c.scale; }
 
+void drawGuiColorPicker(const Ctx& c, float* color, const ImVec4& rect) {
+    const ScopedGuiPointer pointer(c.live);
+    ImRenderUtils::drawColorPicker(color, rect);
+}
+
 float settingHeight(const Ctx& c, Setting* s) {
     float h = c.rowH;
     if (s->mType == SettingType::Enum) {
@@ -607,9 +621,6 @@ void drawBoolRow(const Ctx& c, BoolSetting* s, const ImVec4& row) {
     if (hov && c.lmb) s->mValue = !s->mValue;
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : 12.0f * c.scale;
     text(c.dl, c.font, fs, ImVec2(row.x + labelX, (row.y + row.w - fs) * 0.5f),
          s->mName, s->mValue ? c.ink : c.inkMid, c.a, c.textShadow);
@@ -628,13 +639,7 @@ void drawNumberRow(const Ctx& c, NumberSetting* s, const ImVec4& row) {
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
     const float padX = 12.0f * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : padX;
-    // Label and value sit on the SAME vertical centre the bool/enum/color rows
-    // use — the old +4px top anchor made number rows ride visibly higher than
-    // their neighbours in a mixed flyout.
     const float ty = (row.y + row.w - fs) * 0.5f;
     text(c.dl, c.font, fs, ImVec2(row.x + labelX, ty), s->mName,
          c.inkMid, c.a, c.textShadow);
@@ -647,11 +652,6 @@ void drawNumberRow(const Ctx& c, NumberSetting* s, const ImVec4& row) {
     text(c.dl, c.bold, fs, ImVec2(row.z - padX - vw, ty), val,
          c.ink, c.a, c.textShadow);
 
-    // The whole row is the drag target either way; only the track's LOOK
-    // differs. Columns draws a rounded trough whose fill is a slice of the
-    // same flowing gradient sheet the enabled rows sample, with a bright knob
-    // riding the fill edge — matching the layout's rounded, glazed language.
-    // The Panel keeps its slim underline below, untouched.
     const float range = (s->mMax - s->mMin) > 0.0f ? (s->mMax - s->mMin) : 1.0f;
     const float trackY = c.colSlider ? row.w - 8.0f * c.scale : row.w - 7.5f * c.scale;
     const float trackH = c.colSlider ? 6.0f * c.scale : 3.5f * c.scale;
@@ -662,7 +662,7 @@ void drawNumberRow(const Ctx& c, NumberSetting* s, const ImVec4& row) {
     if (hov && ImGui::IsMouseClicked(0)) g_slider = s;
     if (!ImGui::IsMouseDown(0) && g_slider == s) g_slider = nullptr;
     if (g_slider == s && ImGui::IsMouseDown(0) && c.live) {
-        float v = (ImRenderUtils::getMousePos().x - track.x) / trackW * range + s->mMin;
+        float v = (guiMousePos().x - track.x) / trackW * range + s->mMin;
         if (s->mStep > 0.0f) v = std::round(v / s->mStep) * s->mStep;
         s->mValue = std::clamp(v, s->mMin, s->mMax);
     }
@@ -716,9 +716,6 @@ void drawEnumRow(const Ctx& c, EnumSetting* s, const ImVec4& row) {
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
     const float padX = 12.0f * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : padX;
     text(c.dl, c.font, fs, ImVec2(head.x + labelX, (head.y + head.w - fs) * 0.5f), s->mName,
          c.inkMid, c.a, c.textShadow);
@@ -744,9 +741,6 @@ void drawEnumRow(const Ctx& c, EnumSetting* s, const ImVec4& row) {
         c.dl->AddLine(ImVec2(cx, cy + d), ImVec2(cx + w, cy - d), col, 1.6f * c.scale);
     }
 
-    // Left click opens/closes the list, right click cycles without opening. The
-    // old mapping had it the other way round, which made a left click on a closed
-    // dropdown silently change the value instead of showing the options.
     if (hov && c.lmb) s->enumExtended = !s->enumExtended;
     if (hov && c.rmb && !s->mValues.empty())
         s->mValue = (s->mValue + 1) % static_cast<int>(s->mValues.size());
@@ -754,13 +748,6 @@ void drawEnumRow(const Ctx& c, EnumSetting* s, const ImVec4& row) {
     const float reveal = easeOutBack(std::clamp(s->enumSlide, 0.0f, 1.0f));
     if (reveal <= 0.002f) return;
 
-    // Options sit at full spacing and the visible height is clipped, so opening
-    // reads as the list sliding out from under the header rather than the rows
-    // stretching. Rows fade in slightly behind the springing height.
-    //
-    // The clip is widened past the row. Columns draws this list inside a
-    // settings area that is already inset from the column, and a second clip
-    // exactly on that inset cut the dropdown (and the rows under it) in half.
     const float optH = optionHeight(c);
     const int   n = static_cast<int>(s->mValues.size());
     const float visible = n * optH * reveal;
@@ -768,11 +755,6 @@ void drawEnumRow(const Ctx& c, EnumSetting* s, const ImVec4& row) {
     const float clipPad = 48.0f * c.scale;
     c.dl->PushClipRect(ImVec2(row.x - clipPad, base), ImVec2(row.z + clipPad, base + visible), true);
 
-    // Recessed plate behind the list so it reads as a dropdown rather than as
-    // extra rows of the surface it sits on. Rounded at the bottom only: the top
-    // meets the header flush. Columns skips it — the options sit flush under
-    // the row, inside the column that opened them. That plate is the dark
-    // half-fade that used to cover a long settings list.
     if (!c.columnsBody)
         fill(c.dl, ImVec4(row.x + 8.0f * c.scale, base, row.z - 8.0f * c.scale, base + visible),
              c.plate, c.plateA * c.a, 7.0f * c.scale,
@@ -823,9 +805,6 @@ void drawColorRow(const Ctx& c, ColorSetting* s, const ImVec4& row) {
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
     const float padX = 12.0f * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : padX;
     text(c.dl, c.font, fs, ImVec2(head.x + labelX, (head.y + head.w - fs) * 0.5f), s->mName,
          c.inkMid, c.a, c.textShadow);
@@ -846,7 +825,7 @@ void drawColorRow(const Ctx& c, ColorSetting* s, const ImVec4& row) {
     c.dl->PushClipRect(ImVec2(row.x - clipPad, base), ImVec2(row.z + clipPad, base + ph), true);
     const float cw = (row.z - row.x) - 24.0f * c.scale;
     const float chh = pickerHeight(c) - 34.0f * c.scale;
-    ImRenderUtils::drawColorPicker(s->mValue,
+    drawGuiColorPicker(c, s->mValue,
         ImVec4(row.x + 12.0f * c.scale, base + 4.0f * c.scale, cw, chh));
     c.dl->PopClipRect();
 }
@@ -860,9 +839,6 @@ void drawStringRow(const Ctx& c, StringSetting* s, const ImVec4& row) {
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
     const float padX = 12.0f * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : padX;
     text(c.dl, c.font, fs, ImVec2(row.x + labelX, (row.y + row.w - fs) * 0.5f), s->mName,
          c.inkMid, c.a, c.textShadow);
@@ -894,9 +870,6 @@ void drawKeybindRow(const Ctx& c, Module* mod, const ImVec4& row, const char* la
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
     const float padX = 12.0f * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : padX;
     text(c.dl, c.font, fs, ImVec2(row.x + labelX, (row.y + row.w - fs) * 0.5f),
          std::string(label), c.inkMid, c.a, c.textShadow);
@@ -917,9 +890,6 @@ void drawKeybindRow(const Ctx& c, Module* mod, const ImVec4& row, const char* la
          c.a, c.textShadow);
 }
 
-// A keybind row backed by a plain int rather than a Module. Used for the eject
-// hotkey, which lives in Config and has no module to hang a keybind on.
-// `prefix` is drawn ahead of the key name for combos (e.g. "Ctrl + ").
 void drawKeyRow(const Ctx& c, const ImVec4& row, const char* label, int* target,
                 const char* prefix, const std::string& desc) {
     const std::string key = "key" + std::string(label);
@@ -931,9 +901,6 @@ void drawKeyRow(const Ctx& c, const ImVec4& row, const char* label, int* target,
 
     const float fs = (c.columnsBody ? 15.5f : 14.5f) * c.scale;
     const float padX = 12.0f * c.scale;
-    // Columns flyout labels hug the same left line the module title docks to
-    // when its settings open (the flyout area is inset 4px from the row); the
-    // Panel keeps its classic inset.
     const float labelX = c.columnsBody ? (c.columnsClean ? 0.0f : 8.0f) * c.scale : padX;
     text(c.dl, c.font, fs, ImVec2(row.x + labelX, (row.y + row.w - fs) * 0.5f),
          std::string(label), c.inkMid, c.a, c.textShadow);
@@ -965,21 +932,12 @@ void drawSetting(const Ctx& c, Setting* s, const ImVec4& row) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Module card (Rise standard style): a flat ~40px strip — name on top, one
-// line of gray description under it — plus a settings body that slides open
-// beneath the strip on right click. The enabled state is communicated by the
-// name turning the accent colour, exactly like Rise; there is no toggle
-// switch, no gradient, no edge bar.
+// Module cards keep their header height while the settings body expands inline.
 // ---------------------------------------------------------------------------
 namespace {
 
 float cardHeaderHeight(const Ctx& c) { return 40.0f * c.scale; }
 
-// A small "Reset settings" pill for the bottom of a module's settings body.
-// One click restores every setting to its construction default. `left` docks
-// the pill flush to the LEFT edge — the same line the setting labels and the
-// module-name headers sit on (the Columns flyout look); otherwise it is
-// centred (the Panel card look).
 void drawResetPill(const Ctx& c, Module* owner, const ImVec4& row, bool left) {
     const float bh = row.w - row.y;
     const float ph = std::min(22.0f * c.scale, bh - 2.0f * c.scale);
@@ -1019,9 +977,6 @@ float cardBodyHeight(const Ctx& c, Module* mod, float cardWidth) {
 }
 
 float cardHeight(const Ctx& c, Module* mod, float cardWidth) {
-    // easeOutBack, not cubic: the body springs past its resting height and
-    // settles back, which is what makes the dropdown read as "popping open".
-    // drawCard MUST use the same curve or measured and drawn heights disagree.
     return cardHeaderHeight(c) +
            cardBodyHeight(c, mod, cardWidth) * easeOutBack(std::clamp(mod->cAnim, 0.0f, 1.0f));
 }
@@ -1036,8 +991,7 @@ void drawCard(const Ctx& c, Module* mod, const ImVec4& box, const std::string& c
     const float h = hoverOf(key, hovHead, c.dt);
     const float cardRound = 6.0f * c.scale;
 
-    // Rise card: one flat darkening overlay on the panel background, deepened
-    // by hover. Nothing else.
+    // Hover darkens the card without changing its geometry.
     fill(c.dl, box, ImVec4(0, 0, 0, 1), 0.16f * c.surface * c.a, cardRound);
     if (h > 0.004f)
         fill(c.dl, box, ImVec4(0, 0, 0, 1), 0.10f * h * c.a, cardRound);
@@ -1072,8 +1026,7 @@ void drawCard(const Ctx& c, Module* mod, const ImVec4& box, const std::string& c
             mod->Toggle();
             if (Module* ts = ModuleManager::GetInstance().GetModuleByName("ToggleSounds"))
                 if (ts->IsEnabled()) ToggleSounds::PlayToggleSound(mod->IsEnabled());
-            // Same toast the keybind path emits — just the module NAME + type
-            // (Nova derives the status from the type, Stead its own title).
+
             Notifications::AddNotification(
                 mod->GetName(),
                 mod->IsEnabled() ? NotifType::ToggleOn : NotifType::ToggleOff);
@@ -1081,8 +1034,7 @@ void drawCard(const Ctx& c, Module* mod, const ImVec4& box, const std::string& c
         if (c.rmb) mod->showSettings = !mod->showSettings;
     }
 
-    // Name + description, the two Rise lines. Enabled = accent name, disabled
-    // = soft white; the description stays a quiet gray either way.
+    // Enabled names switch to the current accent.
     const float nameSize = 15.0f * c.scale;
     const float nameX = box.x + 12.0f * c.scale;
     const float nameY = head.y + 6.0f * c.scale;
@@ -1143,10 +1095,6 @@ void drawCard(const Ctx& c, Module* mod, const ImVec4& box, const std::string& c
 
     if (mod->cAnim <= 0.002f || !hasBody) return;
 
-    // Settings body. The reveal is a small choreography: the height springs
-    // with easeOutBack (the bounce), while the contents fade in and drop a few
-    // pixels into place. Input is muted until the motion settles so a
-    // mid-animation click cannot land on a row that has already slid away.
     const float openT = std::clamp(mod->cAnim, 0.0f, 1.0f);
     const float bodyH = cardBodyHeight(c, mod, cardW) * easeOutBack(openT);
     const float contentA = std::clamp(openT * 2.2f, 0.0f, 1.0f);
@@ -1201,12 +1149,9 @@ void drawPanelShell(const Ctx& c, const ImVec4& panel, const ImVec4& rail) {
     (void)rail;
     if (c.a <= 0.004f) return;
 
-    // Rise shell: tight shadow, ONE flat dark fill, one thin border. The old
-    // glass stack (top hairline, sheen line, bottom ambient glow, gradient
-    // rail plate) is gone — flat is the look.
-    if (c.shadow) {
+    if (c.shadow && c.shadowK > 0.001f) {
         ImRenderUtils::fillShadowRectangle(panel, ImColor(0.0f, 0.0f, 0.0f, 1.0f),
-                                           0.55f * c.a, c.round, 20.0f * c.scale, 0.85f, c.dl);
+                                           0.55f * c.shadowK * c.a, c.round, 20.0f * c.scale, 0.85f, c.dl);
     }
     fill(c.dl, panel, kPanel, 0.985f * c.surface * c.a, c.round);
     stroke(c.dl, panel, ImVec4(1, 1, 1, 1), 0.055f * c.a, c.round, 1.0f);
@@ -1254,12 +1199,6 @@ float drawRailItem(const Ctx& c, const ImVec4& r, const std::string& label,
 
 } // namespace
 
-// ---- Live search ------------------------------------------------------------
-// The query is fed straight from the WndProc (WM_CHAR) while the panel is open
-// — there is no input field to click into. drawSearchText only RENDERS the
-// query, with a per-character appear animation driven by an array of reveal
-// times (one per code point). ClickGUI:: static members must live OUTSIDE the
-// anonymous namespace; the draw helper below goes back into one.
 
 struct SearchReveal { float t; };   // 0..1 appear progress, one per code point
 static std::vector<SearchReveal> g_searchReveal;
@@ -1294,19 +1233,13 @@ void ClickGUI::FeedSearchChar(unsigned int ch) {
                 g_search[len + 3] = '\0';
             }
             g_searchReveal.push_back({ 0.0f });
-            // One-shot proof in the log that keystrokes reach the query —
-            // gone forever the moment the search ribbon shows text.
+
             static bool s_logged = false;
             if (!s_logged) { s_logged = true; LOG_INFO("ClickGUI live search: input flows", "ClickGUI"); }
         }
     }
 }
 
-// WM_KEYDOWN path — primary input route. ToUnicode with the live keyboard
-// state translates the virtual key into the character the user actually
-// typed (layout + shift aware, cyrillic included). WM_CHAR is deliberately
-// NOT fed: the ToUnicode path already covers it, feeding both would double
-// every keystroke.
 void ClickGUI::FeedSearchKeyDown(unsigned int vk) {
     if (!WantsSearchKeys()) return;
 
@@ -1352,17 +1285,10 @@ bool ClickGUI::EscapeClearsSearch() {
 
 namespace {
 
-// The query line, ported from Rise 6.9.5 (SearchScreen + TextBox.draw):
-// plain WHITE text horizontally CENTERED over the content area, a soft
-// sine-pulsed caret after the last glyph — and NOTHING else. Rise's TextBox
-// has no field chrome (no plate, no border, no rounded box), and the "ugly
-// underlay on the right" of the old header ribbon is gone for good: with an
-// empty query nothing is drawn at all. Draw-only — ownership of the text
-// lives in FeedSearchChar / FeedSearchKeyDown.
 void drawSearchText(const Ctx& c, const ImVec4& content, float dt, float sizeMul = 1.0f) {
     const char* q = g_search;
     const size_t len = std::strlen(q);
-    const float fs = 15.0f * c.scale * sizeMul;
+    const float fs = 18.0f * c.scale * sizeMul;
 
     // Empty query: a centered hint, same slot the typed query occupies.
     if (len == 0) {
@@ -1374,19 +1300,14 @@ void drawSearchText(const Ctx& c, const ImVec4& content, float dt, float sizeMul
         return;
     }
 
-    // Keep the reveal array aligned with the string length: fresh chars start
-    // at 0 (their push happened in FeedSearchChar), anything that appears
-    // without a push (undo, config restore) skips the animation.
     if (g_searchReveal.size() < len) g_searchReveal.resize(len, { 1.0f });
     else if (g_searchReveal.size() > len) g_searchReveal.resize(len);
 
-    // Measure the full string first so the text is centered as one block
-    // (Rise TextBox: TextAlign.CENTER with a smoothly-eased anchor).
+    // Measure the full string before easing its centered anchor.
     const std::string full(q);
     const float totalW = measure(c.font, fs, full);
 
-    // Rise eases the text anchor toward the new center ((pos*19 + target)/20
-    // per ms) so growth re-centers smoothly instead of snapping.
+    // Ease the anchor instead of moving the text abruptly after each character.
     static float s_anchorX = -1.0f;
     const float targetX = (content.x + content.z) * 0.5f - totalW * 0.5f;
     if (s_anchorX < 0.0f) s_anchorX = targetX;
@@ -1410,8 +1331,7 @@ void drawSearchText(const Ctx& c, const ImVec4& content, float dt, float sizeMul
         const std::string glyph(q + i, clen);
         i += clen - 1;
         const float w = measure(c.font, fs, glyph);
-        // Rise draws the query in pure Color.WHITE; the reveal keeps the slight
-        // upward settle so typing still feels alive.
+            // Each UTF-8 code point rises into place.
         const float a = std::clamp(e, 0.0f, 1.0f);
         text(c.dl, c.font, fs, ImVec2(x, textY + (1.0f - e) * 4.0f * c.scale),
              glyph, ImVec4(1.0f, 1.0f, 1.0f, 1.0f), a * c.a, c.textShadow);
@@ -1419,8 +1339,7 @@ void drawSearchText(const Ctx& c, const ImVec4& content, float dt, float sizeMul
     }
     c.dl->PopClipRect();
 
-    // Rise caret: "(sin(ms / 150) + 1) / 2" alpha — a soft breathing line,
-    // not a hard blink. 1.5px wide, right after the last glyph.
+    // Caret immediately follows the rendered code points.
     const float caretA = (std::sin(GetTickCount64() / 150.0) + 1.0) * 0.5;
     fill(c.dl, ImVec4(x + 3.0f * c.scale, textY + 1.0f, x + 4.5f * c.scale, textY + fs + 1.0f),
          ImVec4(1.0f, 1.0f, 1.0f, 1.0f), (0.25f + 0.75f * (float)caretA) * c.a, 1.0f);
@@ -1463,7 +1382,8 @@ float drawConfigsBody(const Ctx& c, const ImVec4& area) {
     stroke(c.dl, input, ImVec4(1, 1, 1, 1), 0.09f * c.a, 8.0f * c.scale, 1.0f);
 
     static char name[64] = "";
-    if (c.a > 0.5f && !g_strEdit) {
+    if (c.a > 0.003f && !g_strEdit) {
+        const ScopedGuiPointer pointer(c.live);
         const float fs = ImGui::GetFontSize();
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -1473,6 +1393,7 @@ float drawConfigsBody(const Ctx& c, const ImVec4& area) {
         ImGui::Begin("##SunsteadCfgName", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        const UiDrawRange inputRange(ImGui::GetWindowDrawList());
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(kTextHi.x, kTextHi.y, kTextHi.z, c.a));
@@ -1483,6 +1404,7 @@ float drawConfigsBody(const Ctx& c, const ImVec4& area) {
         ImGui::PopStyleVar(1);
         ImGui::End();
         ImGui::PopStyleVar(2);
+        inputRange.finish(g_uiTransform.fade);
     }
 
     const ImVec4 create(area.z - btnW, y, area.z, y + inputH);
@@ -1627,29 +1549,14 @@ float drawChangelogBody(const Ctx& c, const ImVec4& area) {
     return y - area.y;
 }
 
-// Settings tab: the panel's own settings, grouped, using the same row widgets as
-// a module card. `owner` is the ClickGUI module itself. Returns the total content
-// height so the caller can drive the scrollbar.
-//
-// Grouping is by setting name rather than by index because ConfigManager keys on
-// names and the ctor order is free to change; an index-based split would silently
-// put a setting in the wrong section the moment one is inserted.
 float drawSettingsBody(const Ctx& c, Module* owner, const ImVec4& area) {
-    // `col` is a FIXED column assignment, not a "whichever side has room" choice.
-    // Packing by measured height looks balanced until a dropdown opens: the
-    // heights change, a group flips to the other column, and the whole page
-    // rearranges under the cursor. `extras` counts the hand-rolled key rows the
-    // group appends after its settings — the menu bind and the eject hotkey have
-    // no Setting object to be found by name.
     struct Group { const char* title; int col; int extras; std::vector<const char*> names; };
     static const std::vector<Group> groups = {
-        // Gradient / Color Speed moved to the THEMES tab (they describe the
-        // theme's colour behaviour, not the menu's chrome).
+
         { "APPEARANCE", 0, 0, { "Saturation", "Code Color" } },
-        { "DETAILS",    0, 0, { "Glow", "Shadow", "Text Shadow", "Name Casing",
+        { "DETAILS",    0, 0, { "Glow", "Shadow", "Shadow Strength", "Text Shadow", "Name Casing",
                                 "Sort Mode", "Tooltips" } },
-        // Font moved to the THEMES tab (Rise keeps the font picker next to the
-        // theme cards, each option previewed in its own font).
+
         { "MENU",       1, 0, { "Animation", "Layout", "Columns Style", "Ease Speed",
                                 "UI Scale", "Rounding",
                                 "Row Height", "Opacity", "Blur Strength", "Backdrop Dim",
@@ -1694,12 +1601,12 @@ float drawSettingsBody(const Ctx& c, Module* owner, const ImVec4& area) {
         y += 20.0f * c.scale;
 
         const ImVec4 panel(x, y - 5.0f * c.scale, x + colW, y + need + 5.0f * c.scale);
-        if (c.shadow) {
+        if (c.shadow && c.shadowK > 0.001f) {
             ImRenderUtils::fillShadowRectangle(panel, ImColor(0.0f, 0.0f, 0.0f, 1.0f),
-                                               0.5f * c.a, c.round * 0.7f, 16.0f * c.scale,
+                                               0.5f * c.shadowK * c.a, c.round * 0.7f, 16.0f * c.scale,
                                                0.85f, c.dl);
         }
-        // Flat Rise-style group plate (the old card gradient is gone).
+
         fill(c.dl, panel, ImVec4(1, 1, 1, 1), 0.035f * c.surface * c.a, c.round * 0.7f);
         stroke(c.dl, panel, ImVec4(1, 1, 1, 1), 0.05f * c.a, c.round * 0.7f, 1.0f);
 
@@ -1731,19 +1638,11 @@ float drawSettingsBody(const Ctx& c, Module* owner, const ImVec4& area) {
     return std::max(colY[0], colY[1]) - area.y;
 }
 
-// ---------------------------------------------------------------------------
-// Themes tab — a grid of theme cards with a live gradient preview each
-// (Rise-style). Selecting a card writes the same "Theme" EnumSetting the old
-// Appearance dropdown used, so configs and ColorUtils keep working untouched;
-// the dropdown itself is simply no longer listed in the Settings groups.
-// ---------------------------------------------------------------------------
+// Theme selection keeps the existing enum indices used by ColorUtils and configs.
 namespace {
 
 struct ThemeCard { const char* name; ImVec4 c0, c1, c2; };
 
-// Stops mirror ColorUtils::getThemedColor's palettes (indices 0..16). The
-// Rise-style themes are appended AFTER Custom so persisted config indices
-// (and the == 8 Custom checks) keep their meaning.
 const ThemeCard kThemeCards[] = {
     { "Aurora",   ImVec4(58/255.f, 226/255.f, 199/255.f, 1), ImVec4(72/255.f, 149/255.f, 239/255.f, 1), ImVec4(129/255.f, 96/255.f, 240/255.f, 1) },
     { "Ember",    ImVec4(255/255.f, 196/255.f, 84/255.f, 1), ImVec4(255/255.f, 122/255.f, 48/255.f, 1), ImVec4(232/255.f, 58/255.f, 78/255.f, 1) },
@@ -1771,10 +1670,6 @@ const ThemeCard kThemeCards[] = {
 };
 constexpr int kThemeCardCount = (int)(sizeof(kThemeCards) / sizeof(kThemeCards[0]));
 
-// DISPLAY order: every theme in enum order EXCEPT Custom (8), which goes LAST.
-// The enum values themselves stay untouched — persisted config indices and the
-// (== 8) Custom checks in ColorUtils keep their meaning; only where the cards
-// appear in the grid changes.
 constexpr int kThemeDisplayOrder[] = {
     0, 1, 2, 3, 4, 5, 6, 7,             // Aurora..Spectrum
     9, 10, 11, 12, 13, 14, 15, 16,       // Fire..Purple Haze
@@ -1782,6 +1677,37 @@ constexpr int kThemeDisplayOrder[] = {
     8,                                   // Custom — at the end
 };
 constexpr int kThemeDisplayCount = (int)(sizeof(kThemeDisplayOrder) / sizeof(kThemeDisplayOrder[0]));
+static_assert(kThemeDisplayCount == kThemeCardCount);
+
+ImColor samplePalette(const ImColor* colors, int count, float phase) {
+    if (!colors || count <= 0) return ImColor(1.0f, 1.0f, 1.0f, 1.0f);
+    if (count == 1) return colors[0];
+    phase -= std::floor(phase);
+    const float p = phase * static_cast<float>(count);
+    const int i0 = static_cast<int>(p) % count;
+    const int i1 = (i0 + 1) % count;
+    const float t = p - std::floor(p);
+    const float smooth = t * t * (3.0f - 2.0f * t);
+    ImColor result = mix(colors[i0], colors[i1], smooth);
+    result.Value.w = 1.0f;
+    return result;
+}
+
+void drawThemeGradient(const Ctx& c, const ImVec4& r, float round,
+                       const ImColor* colors, int colorCount, float phase) {
+    const int v0 = c.dl->VtxBuffer.Size;
+    c.dl->AddRectFilled(ImVec2(r.x, r.y), ImVec2(r.z, r.w), IM_COL32_WHITE, round);
+    const int v1 = c.dl->VtxBuffer.Size;
+    const float width = std::max(1.0f, r.z - r.x);
+    for (int i = v0; i < v1; ++i) {
+        ImDrawVert& v = c.dl->VtxBuffer[i];
+        const float u = std::clamp((v.pos.x - r.x) / width, 0.0f, 1.0f);
+        const float fringe = static_cast<float>((v.col >> IM_COL32_A_SHIFT) & 0xFFu) / 255.0f;
+        const ImColor color = samplePalette(colors, colorCount, u + phase);
+        v.col = ImGui::GetColorU32(ImVec4(color.Value.x, color.Value.y, color.Value.z,
+                                          c.a * fringe));
+    }
+}
 
 } // namespace
 
@@ -1795,21 +1721,39 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
     }
     if (!themeSet || !gui) return 0.0f;
 
-    // ---- Rise ThemeComponent layout ---------------------------------------
-    // Card 50px: the top 30px is the theme's gradient strip (rounded top
-    // corners), the bottom 20px is the plate carrying the centered name —
-    // in the theme's own first accent when selected, white otherwise. The
-    // selected card additionally glows with its own colors (Rise blooms it;
-    // here a soft colored shadow).
-    const float gap = 10.0f * c.scale;
+    const float gap = 12.0f * c.scale;
     const int cols = 3;
     const float cardW = (area.z - area.x - gap * (cols - 1)) / cols;
-    const float cardH = 50.0f * c.scale;
-    const float stripH = 30.0f * c.scale;
-    const float round = 9.0f * c.scale;
+    const float cardH = 96.0f * c.scale;
+    const float round = std::min(18.0f * c.scale, cardH * 0.42f);
     float y = area.y;
 
-    // Centered header, Rise-style.
+    std::vector<ImColor> customPalette(6, ImColor(1.0f, 1.0f, 1.0f, 1.0f));
+    int customCount = 3;
+    float paletteSpeed = 2.0f;
+    float spectrumSaturation = 1.0f;
+    for (Setting* s : gui->mSettings) {
+        if (!s) continue;
+        if (s->mName == "Colors") {
+            customCount = std::clamp(static_cast<int>(static_cast<NumberSetting*>(s)->mValue), 1, 6);
+        } else if (s->mName == "Color Speed") {
+            paletteSpeed = std::max(0.1f, static_cast<NumberSetting*>(s)->mValue);
+        } else if (s->mName == "Saturation") {
+            spectrumSaturation = std::clamp(static_cast<NumberSetting*>(s)->mValue, 0.0f, 1.0f);
+        } else if (s->mName.rfind("Color ", 0) == 0 && s->mName.size() == 7 &&
+                   s->mType == SettingType::Color) {
+            const int index = s->mName[6] - '1';
+            if (index >= 0 && index < 6) {
+                const auto* color = static_cast<const ColorSetting*>(s);
+                customPalette[index] = ImColor(color->mValue[0], color->mValue[1], color->mValue[2], 1.0f);
+            }
+        }
+    }
+    customPalette.resize(static_cast<size_t>(customCount));
+    const float palettePhase = static_cast<float>(ColorUtils::GetTimeMs() % 1000000) *
+                               0.0001f * paletteSpeed;
+
+    // Centered header.
     {
         const std::string hint = "Tap a theme to apply it";
         const float hw = measure(c.font, 12.5f * c.scale, hint);
@@ -1820,8 +1764,8 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
     y += 26.0f * c.scale;
 
     for (int di = 0; di < kThemeDisplayCount; ++di) {
-        const int i = kThemeDisplayOrder[di];   // card/enum index
-        const int col = di % cols;              // grid position — DISPLAY order
+        const int i = kThemeDisplayOrder[di];
+        const int col = di % cols;
         const int row = di / cols;
         const ThemeCard& t = kThemeCards[i];
         const float x = area.x + col * (cardW + gap);
@@ -1833,50 +1777,59 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
             const bool hov = c.live && over(card);
             const float h = hoverOf(std::string("theme") + std::to_string(i), hov, c.dt);
 
-            // Plate: slightly darker when active (Rise: 15,19,26 vs 18,21,30).
-            fill(c.dl, card, ImColor(active ? 15 : 18, active ? 19 : 21, active ? 26 : 30, 255),
-                 0.92f * c.a, round);
-            if (h > 0.004f)
-                fill(c.dl, card, ImVec4(1, 1, 1, 1), 0.045f * h * c.a, round);
-            stroke(c.dl, card, ImVec4(1, 1, 1, 1),
-                   (0.05f + 0.16f * h) * c.a, round, 1.0f);
-
-            // Gradient strip — rounded top only, full card width (Rise). ONE
-            // single gradient piece (first -> last stop): two half-pieces
-            // leave a seam line where their AA fringes meet. The strip fades
-            // with the panel (c.a) like every other element — the gradient
-            // helper tints vertices in place, so the alpha must be baked into
-            // the stop colors here.
-            const ImVec4 strip(card.x, card.y, card.z, card.y + stripH);
-            const float nowT = (float)(std::fmod(ImGui::GetTime() * 0.35f, 1.0f));
-            ImVec4 s0 = ImVec4(t.c0.x, t.c0.y, t.c0.z, c.a);
-            ImVec4 s1 = ImVec4(t.c2.x, t.c2.y, t.c2.z, c.a);
-            if (i == 7) { // Spectrum: hue sweep
-                ImColor h0 = ImColor::HSV(nowT, 0.75f, 1.0f);
-                ImColor h1 = ImColor::HSV(std::fmod(nowT + 0.5f, 1.0f), 0.75f, 1.0f);
-                s0 = ImVec4(h0.Value.x, h0.Value.y, h0.Value.z, c.a);
-                s1 = ImVec4(h1.Value.x, h1.Value.y, h1.Value.z, c.a);
-            } else if (i == 8) { // Custom: preview the user's actual palette
-                const uint64_t nowMs = ColorUtils::GetTimeMs();
-                ImColor u0 = ColorUtils::getThemedColor(0.0f, nowMs);
-                ImColor u1 = ColorUtils::getThemedColor(60.0f, nowMs);
-                s0 = ImVec4(u0.Value.x, u0.Value.y, u0.Value.z, c.a);
-                s1 = ImVec4(u1.Value.x, u1.Value.y, u1.Value.z, c.a);
+            const ImColor stops[] = {
+                ImColor(t.c0.x, t.c0.y, t.c0.z, 1.0f),
+                ImColor(t.c1.x, t.c1.y, t.c1.z, 1.0f),
+                ImColor(t.c2.x, t.c2.y, t.c2.z, 1.0f)
+            };
+            const ImColor* palette = stops;
+            int paletteCount = static_cast<int>(IM_ARRAYSIZE(stops));
+            if (i == 7) {
+                static ImColor spectrum[3];
+                const float hue = std::fmod(palettePhase, 1.0f);
+                for (int stop = 0; stop < 3; ++stop)
+                    spectrum[stop] = ImColor::HSV(std::fmod(hue + stop / 3.0f, 1.0f),
+                                                 spectrumSaturation, 1.0f);
+                palette = spectrum;
+            } else if (i == 8) {
+                palette = customPalette.data();
+                paletteCount = static_cast<int>(customPalette.size());
             }
-            ImRenderUtils::fillGradientRounded(c.dl, strip, s0, s1, round,
-                                               ImDrawFlags_RoundCornersTop, false);
+            const float phase = palettePhase + static_cast<float>(di) * 0.071f;
+            drawThemeGradient(c, card, round, palette, paletteCount, phase);
+            const ImColor accent = samplePalette(palette, paletteCount, phase + 0.5f);
+            ImRenderUtils::fillShadowRectangle(card, accent,
+                (active ? 0.55f : 0.22f + 0.25f * h) * c.a, round,
+                26.0f * c.scale, 0.85f, c.dl);
+            shadeDiag(c.dl, card,
+                      ImVec4(1.0f, 1.0f, 1.0f, 0.18f * c.a),
+                      ImVec4(1.0f, 1.0f, 1.0f, 0.0f), round);
+            if (h > 0.004f)
+                fill(c.dl, card, ImVec4(1, 1, 1, 1), 0.065f * h * c.a, round);
+            stroke(c.dl, card, ImVec4(1, 1, 1, 1),
+                   (active ? 0.75f : 0.16f + 0.18f * h) * c.a, round,
+                   active ? 1.6f * c.scale : 1.0f);
 
-            // Centered name below the strip — the theme's first accent when
-            // selected, white otherwise (Rise draws exactly this way). The
-            // selected card is distinguished ONLY by the darker plate + the
-            // accent name — no glow (it read as a halo blob).
-            const std::string name(t.name);
-            const float fs = 14.0f * c.scale;
-            const float nw = measure(c.font, fs, name);
-            text(c.dl, c.font, fs,
-                 ImVec2(card.x + (card.z - card.x - nw) * 0.5f, card.y + stripH + 4.0f * c.scale),
-                 name, active ? s0 : ImVec4(1, 1, 1, 1),
-                 (active ? 1.0f : 0.85f) * c.a, c.textShadow);
+            const float fs = 16.0f * c.scale;
+            text(c.dl, c.bold, fs, ImVec2(card.x + 16.0f * c.scale,
+                                          card.y + (card.w - card.y - fs) * 0.5f),
+                 t.name, ImVec4(1.0f, 1.0f, 1.0f, 1.0f), c.a, true);
+
+            const float selectorR = 9.0f * c.scale;
+            const ImVec2 selector(card.z - 24.0f * c.scale, (card.y + card.w) * 0.5f);
+            c.dl->AddCircle(selector, selectorR,
+                            ImGui::GetColorU32(ImVec4(1, 1, 1, (active ? 0.95f : 0.55f) * c.a)),
+                            24, (active ? 1.8f : 1.3f) * c.scale);
+            if (active) {
+                c.dl->AddCircleFilled(selector, selectorR - 2.0f * c.scale,
+                                      ImGui::GetColorU32(ImVec4(1, 1, 1, 0.94f * c.a)), 24);
+                c.dl->AddLine(ImVec2(selector.x - 4.0f * c.scale, selector.y),
+                              ImVec2(selector.x - 1.0f * c.scale, selector.y + 3.0f * c.scale),
+                              ImGui::GetColorU32(ImVec4(0.10f, 0.12f, 0.16f, c.a)), 1.6f * c.scale);
+                c.dl->AddLine(ImVec2(selector.x - 1.0f * c.scale, selector.y + 3.0f * c.scale),
+                              ImVec2(selector.x + 4.5f * c.scale, selector.y - 3.5f * c.scale),
+                              ImGui::GetColorU32(ImVec4(0.10f, 0.12f, 0.16f, c.a)), 1.6f * c.scale);
+            }
 
             if (hov && c.lmb && !active) {
                 themeSet->mValue = i;
@@ -1888,10 +1841,21 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
     const int rows = (kThemeCardCount + cols - 1) / cols;
     y += rows * (cardH + gap) + 10.0f * c.scale;
 
-    // ---- Font picker (Rise InterfaceModule style): each option is PREVIEWED
-    // in its own font — the label IS the preview. The Font EnumSetting moved
-    // here from the Menu section; selecting writes the same enum value every
-    // other reader (RenderManager push, titleFont) already uses.
+    {
+        Setting* strength = nullptr;
+        for (Setting* s : gui->mSettings)
+            if (s && s->mName == "Theme Strength") { strength = s; break; }
+        if (strength) {
+            const float sh = settingHeight(c, strength);
+            const ImVec4 row(area.x, y, area.z, y + sh);
+            if (row.w > area.y - 4.0f && row.y < area.w + 4.0f) {
+                captureTip(c, row, strength->mDescription);
+                drawSetting(c, strength, row);
+            }
+            y += sh + 12.0f * c.scale;
+        }
+    }
+
     {
         EnumSetting* fontSet = nullptr;
         for (Setting* s : gui->mSettings)
@@ -1931,7 +1895,7 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
                 stroke(c.dl, card, ImVec4(1, 1, 1, 1),
                        (0.05f + 0.16f * h) * c.a, round, 1.0f);
 
-                // The preview: the option's own name in its OWN font (Rise).
+                // Preview each option in its own font.
                 ImFont* own = fontFor(i);
                 const std::string name = fontSet->mValues[i];
                 const float fs = 15.0f * c.scale;
@@ -1954,9 +1918,6 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
         }
     }
 
-    // ---- Bold weight toggle: lives right under the picker of the font it
-    //      applies to (it used to have no surface at all after the Font
-    //      setting moved to this tab, so the option was unreachable).
     {
         BoolSetting* boldSet = nullptr;
         for (Setting* s : gui->mSettings)
@@ -1971,8 +1932,7 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
                 const bool on = boldSet->mValue;
                 const bool hov = c.live && over(row);
                 const float h = hoverOf("boldfont", hov, c.dt);
-                // Smooth knob animation driven locally (the shared tickAnims
-                // pass does not run for this hand-drawn surface).
+                // This control is outside the shared settings animation pass.
                 static float s_boldAnim = 0.0f;
                 s_boldAnim += ((on ? 1.0f : 0.0f) - s_boldAnim) *
                               std::clamp(c.dt * 16.0f, 0.0f, 1.0f);
@@ -1996,10 +1956,6 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
         }
     }
 
-    // ---- Custom palette, INLINE below the grid (Rise ThemeKeyColorComponent) --
-    // Redesigned for a dedicated tab: a swatch grid in the theme-card
-    // language plus ONE inline HSV editor for the selected slot — not a
-    // stack of expandable setting rows.
     if (themeSet->mValue == 8) {
         text(c.dl, c.font, 11.5f * c.scale, ImVec2(area.x + 4.0f * c.scale, y),
              std::string("CUSTOM THEME"), kTextLo, c.a, false);
@@ -2023,9 +1979,6 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
             static int s_selSwatch = 0;
             if (s_selSwatch >= count) s_selSwatch = count - 1;
 
-            // Swatch strip: the active palette followed by one "+" slot
-            // while there is room. A click picks the slot for the editor;
-            // right-click on an active swatch trims the palette tail.
             const float swGap = 10.0f * c.scale;
             const int swCols = 6;
             const float swW = (area.z - area.x - swGap * (swCols - 1)) / swCols;
@@ -2123,7 +2076,7 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
                          ImVec2(panel.z - pad - hw, panel.y + (headH - 12.5f * c.scale) * 0.5f),
                          hex, kTextLo, c.a, false);
 
-                    ImRenderUtils::drawColorPicker(colors[s_selSwatch]->mValue,
+                    drawGuiColorPicker(c, colors[s_selSwatch]->mValue,
                         ImVec4(panel.x + pad, panel.y + headH + pad, svW, svH));
                 }
                 y += panelH + 6.0f * c.scale;
@@ -2131,10 +2084,6 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
         }
     }
 
-    // ---- Gradient behaviour, INLINE below the grid --------------------------
-    // "Gradient" and "Color Speed" describe how the THEME's colours animate,
-    // so they live here next to the theme cards (they used to sit under
-    // Settings / APPEARANCE). Same row rendering the Custom palette uses.
     {
         Setting* gradSet = nullptr;
         Setting* speedSet = nullptr;
@@ -2175,12 +2124,6 @@ float drawThemesBody(const Ctx& c, const ImVec4& area) {
 
 ClickGUI::ClickGUI()
     : Module("ClickGUI", "Displays the clickable graphical interface", Category::Visual, VK_INSERT) {
-    // --- appearance (formerly the Interface module) --------------------------
-    // These names must match what Interface used, or every existing config loses
-    // its theme. ColorUtils::getThemedColor and RenderManager look them up by
-    // name on this module.
-    // Theme names must stay in the same ORDER as the branches in
-    // ColorUtils::getThemedColor — the value is persisted as an int index.
     mTheme    = add<EnumSetting>("Theme", "Visual theme of the client", 0,
                                 std::vector<std::string>{ "Aurora", "Ember", "Frost", "Neon",
                                                           "Mint", "Void", "Sakura", "Spectrum",
@@ -2206,6 +2149,7 @@ ClickGUI::ClickGUI()
     mColors[5] = add<ColorSetting>("Color 6", "Sixth custom color",  0.5f, 0.0f, 1.0f, 1.0f);
     mColorSpeed = add<NumberSetting>("Color Speed", "Speed of color transitions", 2.0f, 0.1f, 10.0f, 0.1f);
     mSaturation = add<NumberSetting>("Saturation", "Color saturation", 1.0f, 0.0f, 1.0f, 0.05f);
+    mThemeStrength = add<NumberSetting>("Theme Strength", "Theme color intensity", 0.55f, 0.0f, 1.0f, 0.05f);
     // §z paints with the theme gradient and §y with a fixed theme stop; §x reads
     // this, so it stays usable whatever the theme is set to.
     mCodeColor = add<ColorSetting>("Code Color", "Color used by the \xC2\xA7x text code",
@@ -2213,27 +2157,24 @@ ClickGUI::ClickGUI()
 
     // --- panel ----------------------------------------------------------------
     mAnim       = add<EnumSetting>("Animation", "Panel entrance style", 1,
-                                  // Glide and Pop are RETIRED — Bloom is the
-                                  // default look now. The list is ordered
-                                  // {Cascade, Bloom} so a stale config that
-                                  // saved Bloom under the old 4-entry indexing
-                                  // (index 2) still clamps onto Bloom after
-                                  // ConfigManager range-clamps enum values.
                                   std::vector<std::string>{ "Cascade", "Bloom" });
-    mEaseSpeed  = add<NumberSetting>("Ease Speed", "Speed of the open/close animation", 12.0f, 5.0f, 20.0f, 0.5f);
+    mEaseSpeed  = add<NumberSetting>("Ease Speed", "Speed of the open/close animation", 12.0f, 3.0f, 30.0f, 0.5f);
     mBlur       = add<NumberSetting>("Blur Strength", "Backdrop blur behind the panel", 8.0f, 0.0f, 20.0f, 0.5f);
-    mDim        = add<NumberSetting>("Backdrop Dim", "How much the world darkens", 0.32f, 0.0f, 1.0f, 0.05f);
+    mDim        = add<NumberSetting>("Backdrop Dim", "How much the world darkens", 0.18f, 0.0f, 1.0f, 0.05f);
     mOpacity    = add<NumberSetting>("Opacity", "Panel surface opacity", 1.0f, 0.35f, 1.0f, 0.01f);
     mRounding   = add<NumberSetting>("Rounding", "Panel corner radius", 10.0f, 0.0f, 26.0f, 1.0f);
     mRowHeight  = add<NumberSetting>("Row Height", "Height of setting rows", 32.0f, 26.0f, 44.0f, 1.0f);
     mUiScale    = add<NumberSetting>("UI Scale", "Overall size of the panel", 1.0f, 0.6f, 1.6f, 0.05f);
     mGlow       = add<NumberSetting>("Glow", "Accent glow intensity", 0.85f, 0.0f, 1.5f, 0.05f);
     mShadow     = add<BoolSetting>("Shadow", "Drop shadow under the panel and cards", true);
+    mShadowStrength = add<NumberSetting>("Shadow Strength", "How strong the drop shadows are", 0.7f, 0.0f, 2.0f, 0.05f);
     mTextShadow = add<BoolSetting>("Text Shadow", "Draw text with a drop shadow", true);
     mCasing     = add<EnumSetting>("Name Casing", "Casing of module names", 0,
-                                  std::vector<std::string>{ "Default", "lowercase", "UPPERCASE" });
+                                  std::vector<std::string>{ "Default", "lowercase" });
     mSort       = add<EnumSetting>("Sort Mode", "Order modules are listed in", 0,
-                                  std::vector<std::string>{ "A-Z", "Z-A", "Enabled First" });
+                                  std::vector<std::string>{ "Alphabetical", "Reverse", "Enabled first" });
+    if (mCasing->mValue >= (int)mCasing->mValues.size()) mCasing->mValue = 0;
+    if (mSort->mValue >= (int)mSort->mValues.size()) mSort->mValue = 0;
     mTooltips   = add<BoolSetting>("Tooltips", "Show setting descriptions on hover", true);
     mMenuButtons = add<BoolSetting>("Menu Buttons", "Show the Settings / Configs / Change Logs buttons on the main and pause screens", true);
     mBlockKeys   = add<BoolSetting>("Block Keys", "Stop keyboard input from reaching Minecraft while the menu is open", false);
@@ -2264,6 +2205,8 @@ void ClickGUI::UpdateSettingsVisibility() {
     mSaturation->mVisible = (mTheme->mValue == 7);
     // The Columns look switch is meaningless while the Panel layout is up.
     if (mColStyle) mColStyle->mVisible = (mLayout->mValue == 1);
+    // Shadow strength only matters while the shadow itself is on.
+    mShadowStrength->mVisible = mShadow->mValue;
 }
 
 void ClickGUI::OnTick() {
@@ -2272,29 +2215,12 @@ void ClickGUI::OnTick() {
 }
 
 // ---------------------------------------------------------------------------
-// Columns mode — its own visual language, nothing shared with Panel.
-//
-// Panel is one flat glass window with a rail. Columns are floating cards in
-// the modern flat style: solid dark surface, one hairline border, a soft card
-// shadow, an accent underline on the header. Depth reads from the shadow and
-// the accent, never from bevels. Module rows are flat: hover lightens, hold
-// darkens slightly, enabled tints the row with the accent and adds the right
-// accent bar. Surfaces are opaque by default — the world does not show
-// through the menu.
-//
-//   * left click a row = toggle, right click = that module's settings flyout
-//   * drag a header = move the column. Only the card under the cursor takes
-//     input, so two overlapping columns can never steal each other's clicks
-//   * right click a header = fold the column into a header-only cap (the
-//     columns are dropdowns); the fold persists via CategoryPos::isExtended
-//   * the live search filter works here too: just type — there is no input
-//     field, the query renders centred at the bottom and non-matching rows
-//     collapse in every column
-//   * flyout height comes from layoutSettingList() with draw=false — the SAME
-//     walk that places the rows, so the panel can never be shorter than what
-//     it renders (the old animated-height version was the overlap bug).
-//   * the sort is FROZEN: longest name first, ties alphabetical. The layout
-//     is built around that taper; Sort Mode stays a Panel-tab option.
+// Columns input and layout:
+//   * LMB toggles a module; RMB opens its inline settings.
+//   * Header dragging respects the topmost column; RMB folds and persists it.
+//   * Search hides non-matching rows without changing the stable tab order.
+//   * layoutSettingList(..., draw=false) measures exactly what drawing lays out.
+//   * Longest names come first, with alphabetical ties; Panel sorting is separate.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -2307,22 +2233,12 @@ float g_colY[kColCount]      = { 64.f, 64.f, 64.f, 64.f, 64.f };
 bool  g_colPlaced[kColCount] = {};
 float g_colBody[kColCount]   = {};   // eased tray height (grows, never overlaps)
 bool  g_colFolded[kColCount] = {};   // RMB on a header folds the column into a cap
-// Eased 0..1 fold state for the HEADER (title slide). Kept separate from
-// g_colBody/bodyFrac on purpose: bodyFrac wobbles whenever the CONTENT height
-// changes (a module's settings opening grows the column), and driving the
-// title from it made the header jerk on every dropdown toggle.
 float g_colFoldAnim[kColCount] = {};
-// Global wheel pan: scrolling ANYWHERE in Columns mode slides ALL columns
-// vertically together — the positions themselves move, nothing scrolls
-// inside a column.
 float g_colPanY  = 0.0f;             // eased pan offset added to every column's Y
 float g_colPanYT = 0.0f;             // pan target
 int   g_colDrag   = -1;
 float g_colDragDX = 0.f, g_colDragDY = 0.f;
 
-// Column-mode tabs: 0 = modules, 1 = settings, 2 = themes, 3 = configs,
-// 4 = changelog. The tab strip is a centred segmented control at the top of
-// the screen; the columns hang below it.
 int   g_colTab = 0;
 float g_colTabScroll = 0.0f, g_colTabScrollT = 0.0f;
 float g_colTabFade = 1.0f;   // 0 right after a switch, eases to 1
@@ -2332,20 +2248,9 @@ float g_tabCardX = 0.0f, g_tabCardY = 0.0f;
 bool  g_tabCardDrag = false;
 float g_tabCardDX = 0.0f, g_tabCardDY = 0.0f;
 
-// The ONE module whose settings are expanded INLINE (under its row). Opening
-// another module closes the previous — the name-slide + expansion reads
-// correctly with a single open body.
 Module* g_openMod = nullptr;
-// The module whose flyout is currently CLOSING: it keeps rendering its
-// bloom-out after losing g_openMod, so closing is the opening animation
-// reversed rather than a hard cut. Retires the frame its cAnim reaches zero.
 Module* g_closingMod = nullptr;
 
-// --- Glass-minimal palette ---------------------------------------------------
-// Almost-black translucent cards over a soft blur, strong corner rounding,
-// NO outlines anywhere: the shape reads from contrast + shadow. The enabled
-// module is a wide soft horizontal gradient (cold blue -> pink-violet in the
-// default theme) — a translucent accent wash, not a button.
 constexpr ImVec4 kSlab   { 0.055f, 0.059f, 0.075f, 1.0f };  // card body (glass)
 constexpr ImVec4 kHead   { 0.133f, 0.141f, 0.165f, 1.0f };  // lighter header strip
 constexpr ImVec4 kWell   { 0.045f, 0.049f, 0.062f, 1.0f };  // settings recess
@@ -2365,18 +2270,12 @@ ImVec4 mixC0(const ImVec4& a, const ImVec4& b, float t) {
 // A glass card: soft blur behind, near-black fill, soft shadow, strong
 // rounding. NO border stroke — ever.
 void drawGlassCard(ImDrawList* dl, const ImVec4& r, float a, float round,
-                   bool shadowOn, float surface = 1.0f) {
+                   bool shadowOn, float surface = 1.0f, float shadowK = 1.0f) {
     surface = std::clamp(surface, 0.0f, 1.0f);
     if (a <= 0.004f || r.z - r.x < 0.5f || r.w - r.y < 0.5f) return;
-    if (shadowOn)
+    if (shadowOn && shadowK > 0.001f)
         ImRenderUtils::fillShadowRectangle(r, ImColor(0.0f, 0.0f, 0.0f, 1.0f),
-                                           0.58f * a * surface, round, 26.0f, 0.85f, dl);
-    // The glass blur paints an OPAQUE blurred rect at replay time, so it can
-    // never fade. A hard alpha cutoff pops mid-close (the "half the menu
-    // vanishes, half lingers" bug): the blur disappears while the fills are
-    // still fading. Instead its strength ramps smoothly to zero — quadratically,
-    // so it is effectively gone by the time the fill reaches ~40% and nobody
-    // can see the switch.
+                                           0.58f * shadowK * a * surface, round, 26.0f, 0.85f, dl);
     const float blurK = std::clamp((a - 0.32f) / 0.68f, 0.0f, 1.0f);
     if (blurK > 0.0f)
         D2D::addBlurOptimized(dl, 2.5f * blurK * blurK, std::optional<ImVec4>(r), round);
@@ -2385,27 +2284,6 @@ void drawGlassCard(ImDrawList* dl, const ImVec4& r, float a, float round,
     fill(dl, r, kSlab, 0.96f * a * surface, round);
 }
 
-// A module row, two Columns looks:
-//
-//   MACHINED — a solid 3D button: near-opaque vertical two-stop base (hover
-//   lifts it, press sinks it), and the eased `lit` state lays a slice of the
-//   ONE menu-wide diagonal theme sheet (gradSpace) under a glossy white glaze.
-//   No flat single-colour faces anywhere.
-//
-//   CLEAN — no button face at all: the row IS the column surface. `full` is
-//   the FULL column width at the row's height, EXTENDED through the row gap,
-//   so enabled rows fuse into one continuous gradient sheet with no dark
-//   seams between them. Both styles sample the SAME `gradSpace` (the whole
-//   menu's bounding box), so an enabled row anywhere continues the same
-//   flowing gradient instead of repeating a private copy; `lit` wipes the
-//   sheet in along the row's diagonal instead of teleporting it on.
-//
-// `joinExt` > 0 means the NEXT visible row is lighting up too: the button and
-// its sheet/glaze extend a hair past the next row's top edge so the two
-// enabled modules read as one continuous run. `joinUp` is the same from the
-// row below — together they square the touching corners, because a rounded
-// corner there bites a dark arc out of the run (that was the black strip
-// between the last two enabled modules).
 void drawRowMinimal(const Ctx& c, const ImVec4& row, float lit, float hov, bool dent,
                     float sA, float round, bool isOpen, bool clean,
                     const ImVec4* full = nullptr, const ImVec4* gradSpace = nullptr,
@@ -2433,9 +2311,6 @@ void drawRowMinimal(const Ctx& c, const ImVec4& row, float lit, float hov, bool 
         return;
     }
 
-    // The join extension reaches a hair past the next row's top so the
-    // anti-aliased shared edge composites over sheet pixels instead of the
-    // dark card.
     const ImVec4 face(row.x, row.y, row.z, row.w + joinExt);
     ImDrawFlags joinFlags = 0;   // flags == 0 is ImGui's "ALL corners rounded"
     if (joinExt > 0.0f || joinUp) {
@@ -2455,10 +2330,6 @@ void drawRowMinimal(const Ctx& c, const ImVec4& row, float lit, float hov, bool 
 
     if (lit > 0.004f || isOpen) {
         const float k = std::max(lit, isOpen ? 0.55f : 0.0f);
-        // The accent face: the button's slice of the SAME menu-wide diagonal
-        // sheet Clean uses — one gradient flowing across all columns, with the
-        // shared sweeping sheen, instead of every button repeating the
-        // identical private copy of it.
         shadeThemedSheet(dl, face, gradSpace ? *gradSpace : row, 1.0f, k * sA,
                          c.gradSpan, c.gradMs, round, joinFlags, fullWash,
                          c.gradLut, c.gradLutN);
@@ -2471,9 +2342,6 @@ void drawRowMinimal(const Ctx& c, const ImVec4& row, float lit, float hov, bool 
     }
 }
 
-// A recess the settings groups sit in: just a darker fill, no stroke. `wipe`
-// < 1 sweeps the fill in along its own diagonal (top-left corner first), so an
-// opening body grows out of its corner instead of popping in at full size.
 void drawWell(ImDrawList* dl, const ImVec4& r, float a, float surface, float round,
               float wipe = 1.0f) {
     a *= std::clamp(surface, 0.0f, 1.0f);
@@ -2498,14 +2366,6 @@ struct SettingGroup {
     const char*              bindLabel = "Keybind";
 };
 
-// Measure-and-draw walk. Returns the height consumed; with draw=false it runs
-// identically but touches no widget, so a caller can size its container from
-// the very same numbers the rows are laid out with.
-//
-// `appear` (0..1) drives the ENTRANCE of the rows: they cascade in from
-// alternating sides with a fast stagger while the container opens. At 1 (the
-// default) everything rests exactly where the measure pass put it. Rows that
-// are still flying take no input, so a mid-animation click can't miss.
 float layoutSettingList(const Ctx& c, Module* owner, const ImVec4& area,
                         const SettingGroup* groups, int nGroups, bool draw,
                         float appear = 1.0f) {
@@ -2561,20 +2421,12 @@ float layoutSettingList(const Ctx& c, Module* owner, const ImVec4& area,
                 c.dl->AddLine(ImVec2(lx, ruleY), ImVec2(area.z - inset, ruleY),
                               col32(ImVec4(1, 1, 1, 1), 0.10f * hc.a), 1.0f);
             }
-            // The recess is skipped entirely when the caller fuses the body
-            // with its surroundings (Clean flyout — see Ctx::noWells). Columns
-            // drops it in both looks: the well is a second dark surface, and
-            // painting it across a long settings list is the half-fade.
             if (!c.noWells && !c.columnsBody)
                 drawWell(c.dl, well, hc.a, c.surface, wr, c.wellWipe);
 
             float ry = well.y + inset;
             const float lx = well.x + rowInset, rx = well.z - rowInset;
             int rowIdx = 0;
-            // Per-row entrance. Default: alternating sideways slide + fade.
-            // cornerReveal (the Columns flyout): rows settle from a few pixels
-            // up-left with a quick stagger — a diagonal pour out of the body's
-            // top-left corner, matching the well's corner wipe.
             const auto rowCtx = [&](float& slideX, float& slideY) -> Ctx {
                 const float rk = c.columnsBody
                     ? std::clamp(appear, 0.0f, 1.0f)
@@ -2598,9 +2450,6 @@ float layoutSettingList(const Ctx& c, Module* owner, const ImVec4& area,
                 const float sh = settingHeight(c, s);
                 float slideX = 0.0f, slideY = 0.0f;
                 Ctx rc = rowCtx(slideX, slideY);
-                // Columns flyout bloom: while the block opens, every row is
-                // pulled toward the block's centre line, so the whole list
-                // expands vertically from its middle as ONE unit.
                 if (c.bloomK < 0.999f)
                     slideY += (c.bloomMid - (ry + sh * 0.5f)) * (1.0f - c.bloomK);
                 const ImVec4 row(lx + slideX, ry + slideY, rx + slideX, ry + slideY + sh);
@@ -2634,11 +2483,6 @@ float layoutSettingList(const Ctx& c, Module* owner, const ImVec4& area,
         y = well.w + grpGap;
     }
 
-    // Reset-to-defaults pill at the very end of the list, docked LEFT. The
-    // group loop leaves y one grpGap PAST the last well — retire it here,
-    // then lay the pill out with a small separation, so the returned height
-    // matches the drawn extent EXACTLY (a mismatch sliced the pill off at
-    // the flyout's bottom clip).
     {
         const float rh = 22.0f * c.scale;
         y -= grpGap;
@@ -2649,14 +2493,11 @@ float layoutSettingList(const Ctx& c, Module* owner, const ImVec4& area,
     return std::max(0.0f, y - area.y);
 }
 
-// The settings slab's page. "Layout" MUST be here or Columns mode would be a
-// one-way trip. Theme/Font/Colors live on the Panel's Themes tab, which this
-// layout has no equivalent of, so they get their own group.
 const SettingGroup kColGroups[] = {
     // Theme/Font/Colors live on the THEMES tab — no duplication here.
     // Gradient / Color Speed live on the THEMES tab (shared drawThemesBody).
     { "APPEARANCE", { "Saturation" } },
-    { "DETAILS", { "Glow", "Shadow", "Text Shadow", "Name Casing", "Sort Mode",
+    { "DETAILS", { "Glow", "Shadow", "Shadow Strength", "Text Shadow", "Name Casing", "Sort Mode",
                    "Tooltips" } },
     { "MENU", { "Layout", "Columns Style", "Animation", "Ease Speed", "UI Scale", "Rounding",
                 "Row Height", "Opacity", "Blur Strength", "Backdrop Dim",
@@ -2680,9 +2521,6 @@ struct ColRow {
 
 bool ClickGUI::WantsSearchKeys() {
     if (g_binding != nullptr || g_keyTarget != nullptr || g_strEdit) return false;
-    // "Modules" is a different tab index per layout, and g_tab is stale while
-    // Columns is active — read the Layout setting so the gate follows the
-    // layout actually on screen.
     int layout = 0;
     if (Module* iface = ModuleManager::GetInstance().GetModuleByName("ClickGUI"))
         for (Setting* s : iface->mSettings)
@@ -2703,9 +2541,6 @@ std::vector<ClickGUI::CategoryPos> ClickGUI::GetCategoryPositions() {
 void ClickGUI::SetCategoryPositions(const std::vector<CategoryPos>& positions) {
     if (positions.empty()) return;
     const CategoryPos& p = positions.front();
-    // A config from the old build stores a column's position, not a panel's.
-    // Treating (0,0) as "unset" keeps the panel centred rather than parking it in
-    // the top-left corner.
     if (p.x == 0.0f && p.y == 0.0f) return;
     g_panelX = p.x;
     g_panelY = p.y;
@@ -2735,15 +2570,12 @@ void ClickGUI::SetTab(int tab) {
     }
     g_tab = clamped;
 
-    // The Columns layout keeps its own tab variable in its own order — without
-    // translating here, the start/pause-screen buttons (Settings=1, Configs=2,
-    // Changelog=4 on the Panel rail) opened the menu stuck on Modules.
     int layout = 0;
     if (Module* iface = ModuleManager::GetInstance().GetModuleByName("ClickGUI"))
         for (Setting* s : iface->mSettings)
             if (s && s->mName == "Layout") { layout = static_cast<EnumSetting*>(s)->mValue; break; }
     if (layout == 1) {
-        static const int kPanelToCol[] = { 0, 1, 3, 2, 4 };  // mods, settings, configs, themes, changelog
+        static const int kPanelToCol[] = { 0, 2, 3, 1, 4 };  // mods, settings, configs, themes, changelog
         const int ct = kPanelToCol[clamped];
         if (ct != g_colTab) {
             g_colTabFade = 0.0f;
@@ -2756,29 +2588,17 @@ void ClickGUI::SetTab(int tab) {
 void ClickGUI::OnEnable() {
     g_open = 0.0f;
     g_ease = 0.0f;
-    g_bloom = 0.0f;
     g_binding = nullptr;
     g_dragging = false;
-    g_tabFade = 0.0f;
+    g_tabFade = 1.0f;
     g_scroll = g_scrollTarget = 0.0f;
-    // g_colTab deliberately persists across opens — the Panel's g_tab does too,
-    // and the start/pause-screen buttons SetTab() BEFORE enabling the menu, so
-    // resetting here would swallow the tab they asked for.
     g_colTabFade = 1.0f;
-    // The Columns wheel-pan (g_colPanY) and the tab-card scroll also persist:
-    // resetting them made every close/reopen snap the sheet back to the top,
-    // losing whatever the user had scrolled to. Only a tab/category switch
-    // (SetTab below) resets the tab-card scroll, where the content changes.
     g_tabCardPlaced = false;            // re-centre the tab card on open
     g_tabCardDrag = false;
 
     if (Module* ts = ModuleManager::GetInstance().GetModuleByName("ToggleSounds"))
         if (ts->IsEnabled()) ToggleSounds::PlayToggleSound(true);
 
-    // Deliberately NOT calling the game's ClientInstance::releaseCursor(): under
-    // 1.26.30.x that signature crashes when invoked outside the game's own cursor
-    // state machine. The grabCursor hook already blocks the game's re-grab while a
-    // GUI is open, so freeing the OS cursor is enough.
     ClipCursor(nullptr);
     while (ShowCursor(TRUE) < 0) {}
 }
@@ -2803,43 +2623,32 @@ void ClickGUI::OnDisable() {
 void ClickGUI::DrawColumns() {
     const float dt = ImRenderUtils::getDeltaTime();
     const ImVec2 screen = ImRenderUtils::getScreenSize();
-    // Bloom (Animation == 2) applies HERE too, not just to the Panel: the
-    // whole Columns sheet (tab strip, columns, rows, search readout) derives
-    // its metrics from `scale`, so one multiplier zooms the entire layout in
-    // and out around the screen center. Same fast g_bloom clock + snap as the
-    // Panel so the two looks bloom identically with no late drift.
     const bool on = IsEnabled();
-    const float bloomEase = std::clamp(g_bloom, 0.0f, 1.0f);
-    const float zoom = (mAnim && mAnim->mValue == 1)
-        ? std::clamp(0.82f + 0.18f * (on ? easeOutBack(bloomEase) : easeOutCubic(bloomEase)),
-                     0.0f, 1.06f)
-        : 1.0f;
-    const float scale  = std::clamp(mUiScale->mValue, 0.75f, 1.6f) * zoom;
-    const float tabH   = 32.0f * scale;
-    // Category header row geometry. Larger than before: the visible header
-    // strip must read as the lead of its column, not a caption row.
+    const float openAlpha = std::clamp(g_open <= 0.0f ? 0.0f : easeOutCubic(g_open), 0.0f, 1.0f);
+    g_uiTransform.pivot = ImVec2(screen.x * 0.5f, screen.y * 0.5f);
+    const float scale  = std::clamp(mUiScale->mValue, 0.75f, 1.6f);
+    const float tabH   = 34.0f * scale;
+
     const float headH  = 46.0f * scale;
     const float rowGapBase = 5.0f * scale;
     const float padX   = 10.0f * scale;
     const float padY   = 12.0f * scale;
-    // Strong rounding: the silhouette is the style, there are no outlines.
+
     const float round  = (std::clamp(mRounding->mValue, 0.0f, 22.0f) * 0.5f + 12.0f) * scale;
     const float capRnd = 6.0f * scale;   // rows are solid gradient buttons: visible rounding
-    // Columns Style: Machined (glazed 3D buttons) or Clean (flat, rows fused
-    // with the column — no button faces, no gradients, no sheen).
+
     const bool cleanStyle = (mColStyle && mColStyle->mValue == 1);
     const float rowGap = cleanStyle ? 0.0f : rowGapBase;
-    // Clean names go one step larger: its rows are flat surface, not buttons,
-    // and at the Machined size the name read as a caption adrift on a slab.
+
     const float nameFs = (cleanStyle ? 18.0f : 16.0f) * scale;
     const float colW   = kColW * scale;
     const float rowH   = std::clamp(mRowHeight->mValue, 26.0f, 44.0f) * scale;
 
     Ctx c;
     c.dl = ImGui::GetBackgroundDrawList();
-    c.a = std::clamp(g_open <= 0.0f ? 0.0f : easeOutCubic(g_open), 0.0f, 1.0f);
+    c.a = 1.0f;
     c.dt = dt;
-    c.live = IsEnabled() && c.a > 0.55f && !g_strEdit;
+    c.live = on && openAlpha > 0.55f && !g_strEdit;
     c.lmb = c.live && ImGui::IsMouseClicked(0);
     c.rmb = c.live && ImGui::IsMouseClicked(1);
     c.accent = ColorUtils::getThemedColor(0.0f);
@@ -2848,6 +2657,7 @@ void ClickGUI::DrawColumns() {
     c.round = round;
     c.rowH = rowH;
     c.shadow = mShadow->mValue;
+    c.shadowK = mShadowStrength->mValue;
     c.tooltips = mTooltips->mValue;
     c.font = bodyFont();
     c.bold = titleFont();
@@ -2863,16 +2673,9 @@ void ClickGUI::DrawColumns() {
     c.plate = kRowLo;
     c.plateA = 1.0f;
     c.knob = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-    // One palette period stretched across the whole menu's diagonal, and one
-    // timestamp for the whole frame — every enabled row in every column then
-    // samples the same flowing sheet with no per-row seam.
     c.gradSpan = ColorUtils::getThemedPeriod();
     c.gradMs = ColorUtils::GetTimeMs();
     c.colSlider = true;   // the Columns slider look — never set in Panel mode
-    // Per-frame palette LUT for the gradient sheet: the theme palette is
-    // sampled ONCE here (on a slowed clock, so the sheet plays noticeably
-    // calmer than the raw Color Speed), and every shaded vertex then lerps
-    // table entries instead of re-walking the settings list per sample.
     {
         static ImColor s_sheetLut[128];
         constexpr int kSheetLutN = 128;
@@ -2884,7 +2687,7 @@ void ClickGUI::DrawColumns() {
         c.gradLutN = kSheetLutN;
     }
 
-    const ImVec2 mp = ImRenderUtils::getMousePos();
+    const ImVec2 mp = guiMousePos();
 
     // Tab content fade: eases 0 -> 1 after every switch, content slides in.
     g_colTabFade += (1.0f - g_colTabFade) * std::clamp(dt * 10.0f, 0.0f, 1.0f);
@@ -2892,17 +2695,11 @@ void ClickGUI::DrawColumns() {
     const float tabA = easeOutCubic(g_colTabFade);
     const float tabSlide = (1.0f - tabA) * 10.0f * scale;
 
-    // ---- tab strip: a centred segmented control ------------------------------
-    // The old strip was bare text buttons pinned to the top-left corner with an
-    // instant recolour and a 1px underline. Now it is one centred pill
-    // container with a SLIDING gradient selection pill and eased hover fades.
-    // Geometry is computed before the columns so they can yield input while the
-    // cursor is over the strip; the strip itself is drawn LAST, on top.
-    const char* const kTabs[] = { "Modules", "Settings", "Themes", "Configs", "Changelog" };
+    const char* const kTabs[] = { "Modules", "Themes", "Settings", "Configs", "Changelog" };
     constexpr int kTabCount = 5;
-    const float tabFs  = 14.0f * scale;
-    const float tabPad = 18.0f * scale;
-    const float tabGap = 4.0f * scale;
+    const float tabFs  = 15.0f * scale;
+    const float tabPad = 22.0f * scale;
+    const float tabGap = 8.0f * scale;
     float tabTextW[kTabCount];
     float stripW = tabGap * (kTabCount - 1);
     for (int t = 0; t < kTabCount; ++t) {
@@ -2910,7 +2707,7 @@ void ClickGUI::DrawColumns() {
         stripW += tabTextW[t] + 2.0f * tabPad;
     }
     const float stripX = (screen.x - stripW) * 0.5f;
-    const float stripY = 18.0f;
+    const float stripY = 14.0f;
     ImVec4 tabR[kTabCount];
     float tabTx = stripX;
     for (int t = 0; t < kTabCount; ++t) {
@@ -2918,26 +2715,25 @@ void ClickGUI::DrawColumns() {
         tabR[t] = ImVec4(tabTx, stripY, tabTx + w, stripY + tabH);
         tabTx += w + tabGap;
     }
-    const ImVec4 stripR(stripX - 6.0f * scale, stripY - 5.0f * scale,
-                        stripX + stripW + 6.0f * scale, stripY + tabH + 5.0f * scale);
+    const ImVec4 stripR(stripX - 8.0f * scale, stripY - 6.0f * scale,
+                        stripX + stripW + 8.0f * scale, stripY + tabH + 6.0f * scale);
     bool stripHov = false;
     for (int t = 0; t < kTabCount; ++t)
         if (over(tabR[t])) stripHov = true;
     stripHov = stripHov && c.live;
 
-    // Columns hang below the strip. The old layout reserved a row for a search
-    // INPUT FIELD; the search is a bottom-centred readout now, no field at all.
+
     const float topY = stripY + tabH + 14.0f * scale;
 
-    // Drawn at the END of DrawColumns in both branches, so nothing covers it.
+    // Draw last so the switcher owns overlapping hit tests.
     const auto drawStrip = [&]() {
         const float a = c.a;   // the switcher itself never cross-fades
         if (a <= 0.004f) return;
         const float stripRR = (stripR.w - stripR.y) * 0.5f;
-        if (c.shadow)
+        if (c.shadow && c.shadowK > 0.001f)
             ImRenderUtils::fillShadowRectangle(stripR, ImColor(0.0f, 0.0f, 0.0f, 1.0f),
-                                               0.55f * a * c.surface, stripRR, 20.0f * scale, 0.85f, c.dl);
-        fill(c.dl, stripR, kSlab, 0.94f * a * c.surface, stripRR);
+                                               0.45f * c.shadowK * a * c.surface, stripRR, 24.0f * scale, 0.85f, c.dl);
+        fill(c.dl, stripR, kSlab, 0.72f * a * c.surface, stripRR);
 
         // Sliding selection pill: chases the active tab's rect. Snapped on the
         // first frame so opening the menu never shows it gliding in from zero.
@@ -2997,9 +2793,7 @@ void ClickGUI::DrawColumns() {
         const auto casingName = [&](Module* m) -> std::string {
             std::string n = m->GetName();
             if (mCasing->mValue == 1) n = lowered(n);
-            else if (mCasing->mValue == 2)
-                std::transform(n.begin(), n.end(), n.begin(),
-                               [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+
             return n;
         };
 
@@ -3012,13 +2806,6 @@ void ClickGUI::DrawColumns() {
                 r.nameWidth = measure(c.font, nameFs, r.name);
                 colRows[ci].push_back(std::move(r));
             }
-            // FROZEN LAYOUT SORT: WIDEST NAME FIRST (measured pixels, not
-            // character count — the font is proportional, so two names with
-            // the same character count can render at different widths and a
-            // char-count sort would taper the column wrong), ties
-            // alphabetical. Pinning is a Panel-only feature — Columns
-            // deliberately ignores guiPinned so the frozen taper never
-            // rearranges under the cursor.
             std::stable_sort(colRows[ci].begin(), colRows[ci].end(),
                              [](const ColRow& a, const ColRow& b) {
                                  if (a.nameWidth != b.nameWidth)
@@ -3047,12 +2834,6 @@ void ClickGUI::DrawColumns() {
         if (g_closingMod == g_openMod) g_closingMod = nullptr;
         if (g_closingMod && g_closingMod->cAnim <= 0.002f) g_closingMod = nullptr;
 
-        // Inline settings body height for the ONE open module — measured AFTER
-        // the tick loop above, so dropdowns animating inside the flyout are
-        // already at this frame's heights. Measuring before the ticks left the
-        // body one frame SHORT, which clipped the bottom rows off a freshly
-        // opened dropdown and made them unclickable until it settled. A module
-        // mid-close keeps its own measured height until the bloom-out ends.
         float openNeed = 0.0f, closeNeed = 0.0f;
         if (g_openMod) {
             g_openMod->UpdateSettingsVisibility();
@@ -3067,11 +2848,6 @@ void ClickGUI::DrawColumns() {
                                           kFlyGroup, 1, false);
         }
 
-        // ---- content heights (include the inline expansion) -------------------
-        // easeOutCubic, not easeOutBack: the flyout's measured cavity and its
-        // drawn cavity must agree exactly, and the spring's overshoot bounced
-        // the clip PAST fully-revealed rows — the "animation playing somewhere
-        // separate from the content" mismatch.
         float contentH[kCategoryCount] = {};
         for (int i = 0; i < kCategoryCount; ++i) {
             float h = 0.0f;
@@ -3086,13 +2862,6 @@ void ClickGUI::DrawColumns() {
             contentH[i] = std::max(0.0f, h - rowGap);
         }
 
-        // ---- first-run placement: CENTRED tiers under the tab strip ------------
-        // The old flow laid columns in from the LEFT edge (x=24) — a leftover
-        // from when a dedicated settings column sat at the front. It is gone,
-        // so a fresh menu hugged the left side of the screen. Now each wrap
-        // tier is laid out from zero, measured, then shifted so the tier sits
-        // centred as one block.
-        // Reserve the bottom strip for the centred search readout.
         const float maxBody = std::max(60.0f, screen.y - topY - 56.0f * scale - headH - 2.0f * padY);
         {
             int   placedIdx[kCategoryCount];
@@ -3140,9 +2909,6 @@ void ClickGUI::DrawColumns() {
             g_colY[i] = std::clamp(g_colY[i], -headH - 60.0f, screen.y + 40.0f);
         }
 
-        // ---- geometry, global wheel pan ------------------------------------------
-        // Columns render at FULL content height: nothing scrolls inside a column
-        // anymore — the wheel moves the columns themselves, all at once.
         ImVec4 panelR[kCategoryCount];
         float viewH[kCategoryCount] = {};
         float bodyFrac[kCategoryCount] = {};
@@ -3161,39 +2927,12 @@ void ClickGUI::DrawColumns() {
             if (std::fabs(g_colFoldAnim[i] - foldWant) < 0.004f) g_colFoldAnim[i] = foldWant;
         }
 
-        // The wheel anywhere (but the tab strip) pans every column together.
-        // Standard direction: wheel DOWN (negative delta) moves the columns UP.
-        // NO pan limits at all: columns are allowed to travel past the screen
-        // edges freely — scrolling back down always brings them home.
         if (c.live && !stripHov && ImGui::GetIO().MouseWheel != 0.0f)
             g_colPanYT += ImGui::GetIO().MouseWheel * 64.0f * scale;
         g_colPanY = MathUtils::animate(g_colPanYT, g_colPanY, std::clamp(dt * 12.0f, 0.0f, 1.0f));
 
-        const float appear = 1.0f - c.a;
-        // The per-column stagger is an ENTRANCE-only effect: on the way out it
-        // tears the menu into separately drifting pieces, so a closing menu
-        // slides every column by one shared amount instead. Cascade replaces
-        // the plain slide with a springy drop whose start is delayed per
-        // column, so the columns rain down left to right.
-        auto slideOf = [&](int i) {
-            if (mAnim->mValue == 0) {
-                // Cascade (index 0): springy drop with a per-column start
-                // delay, so the columns rain down left to right. Closing
-                // stays one shared motion — a staggered exit tears the menu
-                // into pieces.
-                if (!IsEnabled()) return appear * 16.0f * scale;
-                const float t = std::clamp(g_open * 1.30f - static_cast<float>(i) * 0.075f,
-                                           0.0f, 1.0f);
-                return (1.0f - easeOutBack(t)) * 34.0f * scale;
-            }
-            return appear * (IsEnabled() ? (22.0f + i * 5.0f) : 16.0f) * scale;
-        };
         for (int i = 0; i < kCategoryCount; ++i) {
-            const float oy = g_colY[i] + slideOf(i) + tabSlide + g_colPanY;
-            // A folded column hugs its header with a single bottom pad instead
-            // of showing an empty strip of card. In Clean the OPEN column gets
-            // almost no bottom pad at all — the last row rounds itself into
-            // the card instead of leaving a dark strip under it.
+            const float oy = g_colY[i] + tabSlide + g_colPanY;
             const float padBot = cleanStyle
                 ? (padY * (1.0f - bodyFrac[i]) + 3.0f * scale * bodyFrac[i])
                 : padY * (1.0f + bodyFrac[i]);
@@ -3201,10 +2940,6 @@ void ClickGUI::DrawColumns() {
                                oy + headH + g_colBody[i] + padBot);
         }
 
-        // ONE shared gradient space spanning ALL columns: an enabled row
-        // anywhere samples its slice of a single menu-wide diagonal gradient
-        // (see shadeThemedSheet) instead of every module running an identical
-        // private copy.
         ImVec4 gradAll(FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX);
         for (int i = 0; i < kCategoryCount; ++i) {
             gradAll.x = std::min(gradAll.x, panelR[i].x);
@@ -3217,13 +2952,6 @@ void ClickGUI::DrawColumns() {
         // samples the same sheet) — the flyout Ctx copies below inherit it.
         c.gradSpace = &gradAll;
 
-        // The column hosting the open (or still-closing) flyout renders LAST
-        // among the columns. A long dropdown can outgrow its own card and
-        // overlap a NEIGHBOUR column (wrapped tiers, dragged columns), and the
-        // neighbour's near-opaque glass card used to paint over the dropdown's
-        // lower part — that was the dark overlay — while input went to the
-        // neighbour too, so the sliders under it were dead. Topmost draw plus
-        // a matching hit order fixes both at once.
         int flyCol = -1;
         {
             Module* const fly[2] = { g_openMod, g_closingMod };
@@ -3236,26 +2964,15 @@ void ClickGUI::DrawColumns() {
         int nOrder = 0;
         for (int i = 0; i < kCategoryCount; ++i)
             if (i != g_colDrag && i != flyCol) order[nOrder++] = i;
-        // The dragged column rides above its settled siblings, but always below
-        // an open flyout — dragging one column across another column's open
-        // dropdown must not bury it either.
         if (g_colDrag >= 0 && g_colDrag < kCategoryCount && g_colDrag != flyCol)
             order[nOrder++] = g_colDrag;
         if (flyCol >= 0) order[nOrder++] = flyCol;
 
         int topCol = -1;
         if (c.live) {
-            // Hit-testing follows the DRAW order: the last column in `order`
-            // that contains the cursor is the visually topmost one, so the
-            // surface you SEE is the surface that takes the click.
             for (int oi = 0; oi < nOrder; ++oi) {
                 const int i = order[oi];
                 const ImVec4& pr = panelR[i];
-                // Input follows the LAID content height, not the eased card
-                // bottom: the card trails a springing settings body by a few
-                // frames, and rows already drawn below it must still take
-                // clicks — otherwise the bottom settings of a freshly opened
-                // flyout are dead until the card catches up.
                 const float trayTop = headH + (cleanStyle ? 1.5f * scale : padY * 0.5f);
                 const float bottom = g_colFolded[i]
                     ? pr.w
@@ -3275,10 +2992,9 @@ void ClickGUI::DrawColumns() {
             if (a <= 0.004f) continue;
 
             // Glass card: blur + translucent near-black, no outline.
-            drawGlassCard(c.dl, panel, a, round, c.shadow, c.surface);
+            drawGlassCard(c.dl, panel, a, round, c.shadow, c.surface, c.shadowK);
 
-            // Header: Machined gets a lighter vertical gradient (flat RGB read
-            // as unfinished), Clean keeps one flat strip — no 3D anywhere.
+
             const ImVec4 head(panel.x, panel.y, panel.z, panel.y + headH);
             const bool headHov = c.live && topCol == i && over(head);
             const float hhov = hoverOf("colhead" + std::to_string(i), headHov, dt);
@@ -3292,17 +3008,10 @@ void ClickGUI::DrawColumns() {
                           ImDrawFlags_RoundCornersTop);
             c.dl->PopClipRect();
             {
-                // Title: bumped from 19 to 22 px at scale=1 — the category
-                // header now reads as the lead of the column rather than a
-                // caption line. The accent glyph below scales to 17->20.
                 const float ts = 22.0f * scale;
                 const std::string title(kCategoryNames[i]);
                 const float tw = measure(c.bold, ts, title);
 
-                // Category glyph at the left edge — the same icon set the
-                // Panel rail draws, at FULL text brightness so it actually
-                // reads (the old dim tint made it nearly invisible). Replaces
-                // the fold chevron, the only arrow in a glyph-driven UI.
                 ImFont* icons = RenderManager::GetInstance().iconFont;
                 float glyphW = 0.0f;
                 if (icons) {
@@ -3317,10 +3026,6 @@ void ClickGUI::DrawColumns() {
                                   kRailGlyphs[i + 1]);
                 }
 
-                // Folded cap: the title leaves its centred slot and docks next
-                // to the glyph — the same leftward slide a module name makes
-                // when its settings open. Driven by g_colFoldAnim so content
-                // height changes (a settings body opening) never jerk it.
                 const float foldT = easeOutCubic(std::clamp(g_colFoldAnim[i], 0.0f, 1.0f));
                 const float centeredX = head.x + (head.z - head.x - tw) * 0.5f;
                 const float dockedX = head.x + 13.0f * scale + glyphW + 2.0f * scale;
@@ -3330,10 +3035,6 @@ void ClickGUI::DrawColumns() {
                      title, kTxt, a, false);
             }
 
-            // Drag: the whole header is the grip. RMB folds the column into a
-            // header-only cap — the columns are dropdowns. The grab offset is
-            // taken against the RENDERED position (pan included), so a panned
-            // column never jumps when picked up.
             if (headHov && c.rmb) g_colFolded[i] = !g_colFolded[i];
             if (c.live && g_colDrag < 0 && ImGui::IsMouseClicked(0) && topCol == i && over(head)) {
                 g_colDrag = i;
@@ -3349,21 +3050,9 @@ void ClickGUI::DrawColumns() {
                 }
             }
 
-            // Clean rows sit flush under the header (no dark strip at the top)
-            // and run to the card's bottom edge, where the last row rounds
-            // itself instead of leaving a dark strip below.
             const ImVec4 tray(panel.x + padX, head.w + (cleanStyle ? 1.5f * scale : padY * 0.5f),
                               panel.z - padX, panel.w - (cleanStyle ? 3.0f * scale : padY));
 
-            // Clip bottom: while folding, the collapsing eased height IS the
-            // animation. Otherwise follow the LAID content (which already
-            // includes the springing settings body), not the eased card — the
-            // card trails a few frames behind and used to slice the bottom
-            // rows off a freshly opened (especially tall) flyout. The clip
-            // always spans the FULL column width: settings rows sit inside
-            // the tray, but an enum's dropdown plate and the Clean wash both
-            // reach the card edges, and a tray-width scissor cut them in half
-            // (the dark half-fade on modules with long settings).
             const float laidBottom = tray.y + contentH[i];
             const float clipBottom = g_colFolded[i]
                 ? tray.y + g_colBody[i]
@@ -3389,12 +3078,6 @@ void ClickGUI::DrawColumns() {
                 if (capH <= 1.0f) { y += capH + rowGap * sA; ++ri; continue; }
                 const bool isOpen = (g_openMod == m);
                 const bool isClosing = (m == g_closingMod) && !isOpen;
-                // One eased progress drives the whole dropdown: the cavity
-                // height, the content alpha and the rows' centre-out bloom all
-                // share it, so the block reads as a single unit appearing.
-                // Monotonic easeOutCubic — no spring: the old easeOutBack
-                // overshoot bounced the clip past already-revealed rows, which
-                // is what made the animation look detached from the content.
                 const float bodyNeed = isOpen ? openNeed : (isClosing ? closeNeed : 0.0f);
                 const float bodyH = (isOpen || isClosing)
                     ? (bodyNeed + 6.0f * scale) * easeOutCubic(std::clamp(m->cAnim, 0.0f, 1.0f))
@@ -3425,21 +3108,10 @@ void ClickGUI::DrawColumns() {
                         // The module losing the flyout keeps blooming OUT —
                         // closing is the same animation reversed, not a cut.
                         if (prevOpen && prevOpen != g_openMod) g_closingMod = prevOpen;
-                        // Deliberately NO auto-scroll nudge: panning the sheet
-                        // down to reveal a freshly opened flyout yanked the
-                        // whole menu under the cursor. The wheel stays the one
-                        // and only way to pan; long setting lists are simply
-                        // scrolled by hand.
                     }
                     captureTip(c, row, m->GetDescription());
                 }
 
-                // Machined: a solid glazed button. Clean: the enabled state is
-                // a full-width slice of the ONE menu-wide diagonal gradient
-                // (gradAll spans every column). Both styles sample gradAll, so
-                // the whole menu shares one flowing gradient. The last visible
-                // row rounds into the card's bottom corners — unless its
-                // settings are open, in which case the body below carries them.
                 const bool isLast = (ri == lastVis) && !((isOpen || isClosing) && bodyH > 1.0f);
                 bool nextEn = false;
                 if (!isLast)
@@ -3456,16 +3128,6 @@ void ClickGUI::DrawColumns() {
                         break;
                     }
                 }
-                // Adjacent enabled modules FUSE: the wash/button reaches
-                // through the row gap to the next row's top edge (plus a hair,
-                // so the anti-aliased shared edge lands on sheet pixels rather
-                // than the dark card) and the touching corners square off — a
-                // rounded corner there bites a dark arc out of the run, which
-                // was the black strip between the last two enabled modules.
-                // The 0.02 gates (not 0.55) keep the join glued to the wipe
-                // itself: with a higher gate the gap went dark until
-                // mid-animation, and the wipe's own edge keeps the extension
-                // invisible until the sheet actually reaches it.
                 const bool joinDown = nextEn && enE > 0.02f;
                 const bool joinUp = prevEn && enE > 0.02f;
                 const float joinH = joinDown
@@ -3478,12 +3140,6 @@ void ClickGUI::DrawColumns() {
                                &gradAll, isLast ? round : 0.0f, cleanStyle,
                                cleanStyle ? 0.0f : joinH, cleanStyle ? false : joinUp);
                 if (capH > nameFs + 6.0f * scale) {
-                    // Name: CENTRED at rest; while its settings are open it
-                    // docks to the LEFT edge and brightens, so the row reads as
-                    // the open dropdown's header. Driven by cAnim itself — the
-                    // same progress the body below uses — so the slide and the
-                    // opening block are one motion (it used to chase a separate
-                    // slower ease and visibly lagged behind).
                     const float openE = easeOutCubic(std::clamp(m->cAnim, 0.0f, 1.0f));
                     const float rowW = row.z - row.x;
                     const float cx = row.x + (rowW - r.nameWidth) * 0.5f;
@@ -3495,38 +3151,21 @@ void ClickGUI::DrawColumns() {
                          (0.88f + 0.12f * enA) * a * sA, false);
                 }
 
-                // The inline settings body opens and closes as ONE unit. A
-                // single eased progress drives everything at once: the cavity
-                // height (above), this clip, the content alpha, and a
-                // centre-out bloom that spreads every row from the cavity's
-                // vertical middle to its final slot. The old build faded the
-                // rows in within a couple of frames while the height kept
-                // springing — an animation playing next to content that had
-                // already popped in. The clip follows the cavity's OWN eased
-                // height (not the eased card bottom, which trails a few frames
-                // behind and used to slice off the lower rows of tall flyouts).
                 if ((isOpen || isClosing) && bodyH > 1.0f) {
                     const float openT = std::clamp(m->cAnim, 0.0f, 1.0f);
-                    // Bloom starts at 40% spread, not zero: below that the
-                    // squashed rows would cross-talk their text while already
-                    // visible, and the cavity is too small to see the difference
-                    // anyway.
                     const float bloom = 0.40f + 0.60f * easeOutCubic(std::clamp(openT * 1.08f, 0.0f, 1.0f));
                     const float inset = 2.0f * scale;
                     const ImVec4 area(row.x + inset, row.w + 2.0f * scale,
                                       row.z - inset, row.w + 2.0f * scale + bodyH);
                     Ctx bc = c;
                     bc.a = c.a * std::clamp(openT * 1.6f, 0.0f, 1.0f);
-                    // Both Columns looks open settings as a plain list under the row.
+
                     bc.noWells = cleanStyle;
                     bc.columnsBody = true;
                     bc.columnsClean = cleanStyle;
                     bc.bloomK = bloom;
                     bc.bloomMid = area.y + bodyH * 0.5f;
                     if (openT < 0.85f) { bc.live = false; bc.lmb = false; bc.rmb = false; }
-                    // Full column width, not the inset settings area: the
-                    // settings use the full card width, and clipping to `area`
-                    // cut their controls in half.
                     c.dl->PushClipRect(ImVec2(panel.x + 1.0f, area.y),
                                        ImVec2(panel.z - 1.0f, area.y + bodyH), true);
                     layoutSettingList(bc, m, area, kFlyGroup, 1, true, 1.0f);
@@ -3536,14 +3175,10 @@ void ClickGUI::DrawColumns() {
                 ++ri;
             }
 
-            // No scrollbar strip: a column is a dropdown and the rail only
-            // cluttered its flank. Wheel scrolling still works, the offset
-            // just has no widget.
             c.dl->PopClipRect();
         }
 
-        // A click on another column while a body is open closes it — through
-        // the same bloom-out path as an explicit toggle, not a hard cut.
+
         if (g_openMod && c.lmb && topCol >= 0) {
             bool onOpen = false;
             for (int i = 0; i < kCategoryCount && !onOpen; ++i)
@@ -3552,15 +3187,10 @@ void ClickGUI::DrawColumns() {
             if (!onOpen) { g_closingMod = g_openMod; g_openMod = nullptr; }
         }
 
-        // Live search readout, Rise-style: NO input field anywhere. Keystrokes
-        // go straight into the filter (FeedSearchKeyDown) and the query renders
-        // CENTRED AT THE BOTTOM with the same per-character reveal the Panel
-        // draws at the top; an empty query shows the hint in the same slot.
         {
             Ctx sc = c;
             sc.a = c.a * tabA;
-            // Bigger than the Panel's line: a lone bottom-centred string has
-            // nothing around it, so at 15px it reads as a leftover label.
+
             const float sFs = 15.0f * scale * 1.4f;
             drawSearchText(sc, ImVec4(0.0f, screen.y - sFs - 30.0f * scale,
                                       screen.x, screen.y - 12.0f * scale), dt, 1.4f);
@@ -3574,7 +3204,7 @@ void ClickGUI::DrawColumns() {
     UpdateSettingsVisibility();
     tickAnims(this, dt, /*bodyOpen=*/true);
 
-    const float cardW = (g_colTab == 1 ? 660.0f : 580.0f) * scale;
+    const float cardW = (g_colTab == 1 || g_colTab == 2 ? 660.0f : 560.0f) * scale;
     const float cardY0 = topY;
     const float maxCardH = screen.y - cardY0 - 24.0f;
 
@@ -3584,11 +3214,13 @@ void ClickGUI::DrawColumns() {
         s_lastTab = g_colTab;
         g_colTabScroll = g_colTabScrollT = 0.0f;
     }
-    float bodyH = (g_colTab >= 2) ? s_tabBody[g_colTab] : 0.0f;
+    float bodyH = (g_colTab >= 1) ? s_tabBody[g_colTab] : 0.0f;
     const float innerW = cardW - 2.0f * padX;
-    if (g_colTab == 1)
+    if (g_colTab == 2)
         bodyH = layoutSettingList(c, this, ImVec4(0.0f, 0.0f, innerW, FLT_MAX),
                                   kColGroups, kColGroupCount, false);
+    else if (g_colTab == 1 && bodyH <= 0.0f)
+        bodyH = 950.0f * scale;   // first-frame estimate until drawn once
 
     if (!g_tabCardPlaced) {
         g_tabCardX = (screen.x - cardW) * 0.5f;
@@ -3612,7 +3244,7 @@ void ClickGUI::DrawColumns() {
     g_colTabScroll = MathUtils::animate(g_colTabScrollT, g_colTabScroll, std::clamp(dt * 14.0f, 0.0f, 1.0f));
 
     const float a = c.a * tabA;
-    drawGlassCard(c.dl, card, a, round, c.shadow, c.surface);
+    drawGlassCard(c.dl, card, a, round, c.shadow, c.surface, c.shadowK);
 
     // Header strip: Machined gets a lighter vertical gradient, Clean keeps one
     // flat strip — no 3D anywhere. Title centred, draggable.
@@ -3645,21 +3277,17 @@ void ClickGUI::DrawColumns() {
         }
     }
 
-    // FIXED clip (top pinned to the card, only the content scrolls) — the
-    // scrolling top that followed the content was the "rows pile onto the
-    // header" bug.
     const float contentTop = card.y + headH + padY;
     const ImVec4 area(card.x + padX, contentTop - g_colTabScroll,
                       card.z - padX, contentTop + viewH);
     c.dl->PushClipRect(ImVec2(area.x - 6.0f * scale, contentTop - 2.0f * scale),
                        ImVec2(area.z + 6.0f * scale, card.w - 3.0f * scale), true);
     if (g_colTab == 1) {
-        // The rows cascade in on every tab switch (g_colTabFade eases 0 -> 1).
-        layoutSettingList(c, this, area, kColGroups, kColGroupCount, true,
-                          easeOutCubic(g_colTabFade));
-        s_tabBody[1] = bodyH;
+        s_tabBody[1] = drawThemesBody(c, area);
     } else if (g_colTab == 2) {
-        s_tabBody[2] = drawThemesBody(c, area);
+        layoutSettingList(c, this, area, kColGroups, kColGroupCount, true,
+                         easeOutCubic(g_colTabFade));
+        s_tabBody[2] = bodyH;
     } else if (g_colTab == 3) {
         s_tabBody[3] = drawConfigsBody(c, area);
     } else if (g_colTab == 4) {
@@ -3683,30 +3311,20 @@ void ClickGUI::DrawColumns() {
 
 void ClickGUI::OnRender() {
     g_tipShow = false;
+    g_uiTransform.enabled = false;
     const bool on = IsEnabled();
     if (on) ClipCursor(nullptr);
 
     const float dt = ImRenderUtils::getDeltaTime();
     const bool bloomAnim = mAnim && mAnim->mValue == 1;
-    const float openRate = bloomAnim ? 10.0f : mEaseSpeed->mValue * 0.16f;
+    const float openRate = std::max(6.0f, mEaseSpeed->mValue * 0.6f);
     const float base = std::clamp(dt * openRate, 0.0f, 1.0f);
-    const float step = on ? base : std::min(1.0f, base * (bloomAnim ? 1.6f : 3.6f));
+    const float step = on ? base : std::min(1.0f, base * (bloomAnim ? 1.15f : 2.4f));
     g_open += ((on ? 1.0f : 0.0f) - g_open) * step;
     g_open = std::clamp(g_open, 0.0f, 1.0f);
-    // The close cutoff sits deep in the tail: at 0.02 the eased alpha is still
-    // ~6%, and cutting there leaves visibly-populated elements vanishing in
-    // one step. 0.004 lands under 1.2% — below what any fill multiplies up to.
     if (!on && g_open < 0.004f) { g_open = 0.0f; return; }
     if (on && g_open > 0.996f) g_open = 1.0f;
 
-    {
-        const float bBase = std::clamp(dt * 10.0f, 0.0f, 1.0f);
-        const float bStep = on ? bBase : std::min(1.0f, bBase * 1.6f);
-        g_bloom += ((on ? 1.0f : 0.0f) - g_bloom) * bStep;
-        g_bloom = std::clamp(g_bloom, 0.0f, 1.0f);
-        if (!on && g_bloom < 0.004f) g_bloom = 0.0f;
-        if (on && g_bloom > 0.99f) g_bloom = 1.0f;
-    }
 
     const int animMode = mAnim->mValue;
     switch (animMode) {
@@ -3714,8 +3332,7 @@ void ClickGUI::OnRender() {
     case 1:  g_ease = easeOutBack(g_open); break;   // Bloom: springy scale-up
     default: g_ease = on ? 1.0f : g_open; break;
     }
-    // Alpha never uses the overshooting curve: easeOutBack exceeds 1 and would
-    // clip colours, and its undershoot below 0 while closing would flicker.
+    // Fade and zoom share progress; only zoom uses the overshooting curve.
     const float alpha = std::clamp(g_open <= 0.0f ? 0.0f : easeOutCubic(g_open), 0.0f, 1.0f);
 
     if (on && g_binding == nullptr && g_keyTarget == nullptr && !g_strEdit &&
@@ -3723,30 +3340,21 @@ void ClickGUI::OnRender() {
         SetEnabled(false);
 
     const ImVec2 screen = ImRenderUtils::getScreenSize();
-    // Panel chrome goes on the BACKGROUND list, not the foreground one.
-    // ImGui composites background list -> window lists -> foreground list, and
-    // the name field / string editor are real ImGui InputTexts living on window
-    // lists (the search ribbon is hand-drawn — the query comes from the WndProc).
-    // Chrome on the foreground list would be painted over their text. The
-    // tooltip is the only thing that needs the foreground.
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
-    // The one and only blur, emitted before any geometry, on the list that is
-    // replayed first. A D2D blur paints an opaque rect onto the backbuffer, so
-    // anything recorded before it on the same list would be erased. Strength
-    // follows alpha^1.6 so it reaches zero while the panel is still faintly
-    // visible — a linear ramp keeps the world blurred under an almost-gone
-    // panel and then pops to sharp at the cutoff.
     if (mBlur->mValue > 0.0f && alpha > 0.01f) {
-        D2D::addBlurOptimized(dl, mBlur->mValue * std::pow(alpha, 1.6f),
-                              std::optional<ImVec4>(ImVec4(0, 0, screen.x, screen.y)), 0.0f);
+        D2D::addBlurOptimized(dl, mBlur->mValue * std::pow(alpha, 1.6f) *
+                              (1.0f + 0.8f * (1.0f - alpha)),
+                                  std::optional<ImVec4>(ImVec4(0, 0, screen.x, screen.y)), 0.0f);
     }
     dl->AddRectFilled(ImVec2(0, 0), ImVec2(screen.x, screen.y),
                       ImGui::GetColorU32(ImVec4(0.008f, 0.010f, 0.016f, mDim->mValue * alpha)));
 
+    dl->PushClipRectFullScreen();
+    const UiDrawRange mainRange(dl);
+
     const float uiScale = std::clamp(mUiScale->mValue, 0.75f, 1.35f);
-    // Unzoomed rest metrics: placement clamps and the Bloom center anchor use
-    // the size the panel HAS at zoom 1, so the zoom never shifts the hitbox.
+    // Saved positions and widget layout always use the unzoomed panel.
     const float restW = kPanelW * uiScale;
     const float restH = std::min(kPanelH * uiScale, screen.y - 40.0f);
 
@@ -3759,37 +3367,29 @@ void ClickGUI::OnRender() {
     g_panelX = std::clamp(g_panelX, -restW * 0.35f, screen.x - restW * 0.65f);
     g_panelY = std::clamp(g_panelY, 0.0f, std::max(0.0f, screen.y - kHeadH * uiScale));
 
-    // Entrance offset: a fixed pixel slide plus, for Bloom, a geometric zoom.
-    // Cascade drops from further up — easeOutBack turns the extra travel into
-    // a springy dip. On CLOSE the overshooting curves are swapped for a
-    // monotonic one: an easeOutBack exit dips the panel BELOW its rest
-    // position mid-close, which reads as a broken wobble.
     const float slideEase = on ? g_ease : easeOutCubic(g_open);
     const float slide = (1.0f - slideEase) *
-                        (animMode == 0 ? 52.0f : 10.0f) * uiScale;
-    // Bloom (anim 1): the whole panel scales up into place around its own
-    // center. Every metric below (panel size, fonts, rows, chrome) derives
-    // from `scale`, so multiplying it scales the entire panel uniformly.
-    // Driven by the fast, snapped g_bloom clock: springy easeOutBack on the
-    // way in, a monotonic shrink on the way out. The zoom is clamped to
-    // [0, 1.06] so it can never drive a font size to zero (ImGui asserts on
-    // font_size > 0).
-    const float bloomEase = std::clamp(g_bloom, 0.0f, 1.0f);
-    const float zoom = animMode == 1
-        ? std::clamp(0.82f + 0.18f * (on ? easeOutBack(bloomEase) : easeOutCubic(bloomEase)),
-                     0.0f, 1.06f)
-        : 1.0f;
-    const float scale  = uiScale * zoom;
-    const float panelW = restW * zoom;
-    const float panelH = std::min(kPanelH * scale, screen.y - 40.0f);
-    // Center anchor: keep the zoomed panel's center where the rest-size
-    // center is, so the grow/shrink reads as breathing, not drifting.
-    const float anchorX = (restW - panelW) * 0.5f;
-    const float anchorY = (restH - panelH) * 0.5f;
+                        (animMode == 0 ? 48.0f : 12.0f) * uiScale;
+    const float minZoom = bloomAnim ? 0.72f : 0.90f;
+    float zoom;
+    if (on) {
+        const float zoomEase = bloomAnim ? easeOutBack(g_open) : easeOutCubic(g_open);
+        zoom = std::clamp(minZoom + (1.0f - minZoom) * zoomEase, 0.75f, 1.06f);
+    } else {
+        zoom = std::pow(easeOutCubic(g_open), 1.7f);
+    }
+    const float scale  = uiScale;
+    const float panelW = restW;
+    const float panelH = restH;
+    g_uiTransform.enabled = true;
+    g_uiTransform.pivot = ImVec2(g_panelX + restW * 0.5f, g_panelY + restH * 0.5f);
+    g_uiTransform.slide = ImVec2(0.0f, slide);
+    g_uiTransform.zoom = zoom;
+    g_uiTransform.fade = alpha;
 
     Ctx c;
     c.dl = dl;
-    c.a = alpha;
+    c.a = 1.0f;
     c.dt = dt;
     c.live = on && alpha > 0.55f && !g_strEdit;
     c.lmb = c.live && ImGui::IsMouseClicked(0);
@@ -3802,37 +3402,33 @@ void ClickGUI::OnRender() {
     c.rowH = mRowHeight->mValue * scale;
     c.glow = mGlow->mValue;
     c.shadow = mShadow->mValue;
+    c.shadowK = mShadowStrength->mValue;
     c.tooltips = mTooltips->mValue;
     c.font = bodyFont();
     c.bold = titleFont();
 
     if (mLayout->mValue == 1) {
-        // BETA Columns mode: one draggable flat column per category.
+
         DrawColumns();
     } else {
-    const ImVec4 panel(g_panelX + anchorX, g_panelY + slide + anchorY,
-                       g_panelX + anchorX + panelW, g_panelY + slide + anchorY + panelH);
+    const ImVec4 panel(g_panelX, g_panelY, g_panelX + panelW, g_panelY + panelH);
     const float railW = kRailW * scale;
     const ImVec4 rail(panel.x, panel.y, panel.x + railW, panel.w);
 
     drawPanelShell(c, panel, rail);
 
-    // --- header: draggable, carries the title only ---------------------------
-    // The search no longer lives in the header: the query renders centered at
-    // the top of the content area while typing (Rise SearchScreen style —
-    // plain white text, caret, no field chrome anywhere). See drawSearchText.
     const float headH = kHeadH * scale;
     const ImVec4 head(rail.z, panel.y, panel.z, panel.y + headH);
     {
         if (c.live && !g_dragging && ImGui::IsMouseClicked(0) && over(head)) {
             g_dragging = true;
-            g_dragDX = ImRenderUtils::getMousePos().x - g_panelX;
-            g_dragDY = ImRenderUtils::getMousePos().y - g_panelY;
+            g_dragDX = guiMousePos().x - g_panelX;
+            g_dragDY = guiMousePos().y - g_panelY;
         }
         if (g_dragging) {
             if (ImGui::IsMouseDown(0)) {
-                g_panelX = ImRenderUtils::getMousePos().x - g_dragDX;
-                g_panelY = ImRenderUtils::getMousePos().y - g_dragDY;
+                g_panelX = guiMousePos().x - g_dragDX;
+                g_panelY = guiMousePos().y - g_dragDY;
             } else {
                 g_dragging = false;
             }
@@ -3845,10 +3441,10 @@ void ClickGUI::OnRender() {
             : std::string(kExtraNames[std::clamp(g_tab - 1, 0, kExtraCount - 1)]);
         const float ts = 21.0f * scale;
         text(dl, c.bold, ts, ImVec2(head.x + kPad * scale, head.y + (headH - ts) * 0.5f - 1.0f),
-             title, kTextHi, alpha, c.textShadow);
+             title, kTextHi, c.a, c.textShadow);
 
         dl->AddLine(ImVec2(head.x + kPad * scale, head.w), ImVec2(head.z - kPad * scale, head.w),
-                    ImGui::GetColorU32(ImVec4(1, 1, 1, 0.055f * alpha)), 1.0f);
+                    ImGui::GetColorU32(ImVec4(1, 1, 1, 0.055f * c.a)), 1.0f);
     }
 
     // --- rail ----------------------------------------------------------------
@@ -3857,12 +3453,12 @@ void ClickGUI::OnRender() {
         // theme accent, nothing else.
         const float bs = 17.0f * scale;
         text(dl, c.bold, bs, ImVec2(rail.x + 14.0f * scale, rail.y + 18.0f * scale),
-             std::string(Sunstead::ClientName), kTextHi, alpha, c.textShadow);
+             std::string(Sunstead::ClientName), kTextHi, c.a, c.textShadow);
         const float bw = measure(c.bold, bs, Sunstead::ClientName);
         text(dl, c.font, 11.0f * scale,
              ImVec2(rail.x + 14.0f * scale + bw + 6.0f * scale, rail.y + 21.0f * scale),
              std::string(Sunstead::ClientVersion),
-             ImVec4(c.accent.Value.x, c.accent.Value.y, c.accent.Value.z, 1.0f), alpha, false);
+             ImVec4(c.accent.Value.x, c.accent.Value.y, c.accent.Value.z, 1.0f), c.a, false);
 
         const float itemH = 34.0f * scale;
         const float top = rail.y + headH + 6.0f * scale;
@@ -3872,10 +3468,6 @@ void ClickGUI::OnRender() {
         // Rail slot space: 0 = All, 1..kCategoryCount = categories, then extras.
         const int railEntryCount = kCategoryCount + 1;
 
-        // Rail entries: index 0 is the ALL overview (every category in one
-        // list), 1..kCategoryCount are the categories, then the extra tabs.
-        // g_category stores -1 for the All view and 0..4 for a category, so the
-        // content pass can treat it uniformly.
         const auto catOfEntry = [&](int e) { return e - 1; }; // entry 1..5 -> Category 0..4
         for (int e = 0; e < railEntryCount; ++e) {
             const bool isAll = (e == 0);
@@ -3899,7 +3491,7 @@ void ClickGUI::OnRender() {
         const float extraTop = top + railEntryCount * itemH + 20.0f * scale;
         dl->AddLine(ImVec2(ix + 6.0f * scale, extraTop - 11.0f * scale),
                     ImVec2(iw - 6.0f * scale, extraTop - 11.0f * scale),
-                    ImGui::GetColorU32(ImVec4(1, 1, 1, 0.045f * alpha)), 1.0f);
+                    ImGui::GetColorU32(ImVec4(1, 1, 1, 0.045f * c.a)), 1.0f);
 
         for (int i = 0; i < kExtraCount; ++i) {
             const ImVec4 r(ix, extraTop + i * itemH, iw, extraTop + (i + 1) * itemH);
@@ -3908,8 +3500,7 @@ void ClickGUI::OnRender() {
             if (c.live && c.lmb && over(r)) SetTab(i + 1);
         }
 
-        // Close row, bottom of the rail — plain text like the other rail
-        // entries (the red pill was the last bit of chrome left over).
+
         const ImVec4 cl(ix, rail.w - 42.0f * scale, iw, rail.w - 12.0f * scale);
         drawRailItem(c, cl, "Close", nullptr, false, "railclose");
         if (c.live && c.lmb && over(cl)) SetEnabled(false);
@@ -3920,7 +3511,7 @@ void ClickGUI::OnRender() {
     if (g_tabFade > 0.996f) g_tabFade = 1.0f;
 
     Ctx cc = c;
-    cc.a = alpha * g_tabFade;
+    cc.a = c.a * g_tabFade;
     const float contentSlide = (1.0f - easeOutCubic(g_tabFade)) * 16.0f * scale;
 
     const ImVec4 content(rail.z + kPad * scale, head.w + kPad * scale - 4.0f * scale,
@@ -3931,18 +3522,13 @@ void ClickGUI::OnRender() {
     if (g_tab == 0) {
         // Search line, always reserved at the top of the module list. Empty it
         // shows the hint; once a query is typed the same slot draws the query.
-        const float searchLineH = 15.0f * scale + 14.0f * scale;
+        const float searchLineH = 18.0f * scale + 14.0f * scale;
         drawSearchText(c, ImVec4(content.x, content.y, content.z, content.y + searchLineH), dt);
 
         // Collect the modules for the active rail entry, honouring search + sort.
         // g_category == -1 is the ALL overview: every category in one list.
         std::vector<Module*> mods;
         const std::string query = lowered(g_search);
-        // Non-matching modules are NOT dropped from the list: they stay in it with
-        // searchAnim easing to 0, so a card collapses and fades out (and slides
-        // back in when it matches again) instead of vanishing between frames.
-        // Only fully-collapsed cards are removed, which is also what keeps the
-        // scroll height honest while the animation runs.
         const auto consider = [&](Module* m) {
             if (!m || m == this) return;
             const bool match = query.empty() ||
@@ -3958,18 +3544,12 @@ void ClickGUI::OnRender() {
         if (g_category < 0) {
             for (Module* m : ModuleManager::GetInstance().GetModules()) consider(m);
         } else {
-            // This module is the menu itself: its settings are the Settings tab, and
-            // a card whose toggle closes the panel you are clicking in is not a
-            // control anyone wants — `consider` skips it.
             for (Module* m : ModuleManager::GetInstance().GetModulesInCategory(
                      static_cast<Category>(std::clamp(g_category, 0, kCategoryCount - 1))))
                 consider(m);
         }
         for (Module* m : mods)
             if (m->searchAnim > 0.5f) ++matchCount;
-        // Sort Mode: 0 = A-Z, 1 = Z-A, 2 = Enabled First. "Enabled First" sorts
-        // alphabetically underneath, so the two halves are each ordered rather
-        // than left in registration order.
         std::stable_sort(mods.begin(), mods.end(), [](Module* a, Module* b) {
             return _stricmp(a->GetName().c_str(), b->GetName().c_str()) < 0;
         });
@@ -3992,11 +3572,6 @@ void ClickGUI::OnRender() {
             tickAnims(m, dt, m->showSettings);
         }
 
-        // Rise grid: TWO columns of ~40px module cards. A row's height is the
-        // taller of its two cards (an expanded card grows its whole row, like
-        // Rise's inline value expansion), and both the height AND the gap
-        // scale with searchAnim so a card leaving the filter closes the space
-        // it occupied instead of leaving a hole.
         const float cardGap = 9.0f * scale;
         constexpr int kCols = 2;
         const float cardW = (content.z - content.x - cardGap * (kCols - 1)) / kCols;
@@ -4039,18 +3614,10 @@ void ClickGUI::OnRender() {
                 const float ch = slotH(m);
                 const float x = content.x + k * (cardW + cardGap);
                 const ImVec4 box(x, y, x + cardW, y + ch);
-                // Off-screen cards are skipped entirely; their animation state
-                // was already advanced above so nothing freezes while scrolled
-                // away.
                 if (box.w > content.y - 4.0f && box.y < content.w + 4.0f && ch > 1.0f) {
                     std::string name = m->GetName();
                     if (mCasing->mValue == 1) name = lowered(name);
-                    else if (mCasing->mValue == 2)
-                        std::transform(name.begin(), name.end(), name.begin(),
-                                       [](unsigned char ch2) { return static_cast<char>(std::toupper(ch2)); });
-                    // A leaving card fades and slides right; clipping to its
-                    // shrinking slot is what makes it read as collapsing
-                    // rather than squashing.
+
                     Ctx sc = cc;
                     sc.a = cc.a * sa;
                     sc.live = cc.live && sa > 0.85f;   // no clicks on a card mid-exit
@@ -4082,17 +3649,12 @@ void ClickGUI::OnRender() {
             const float t = g_scroll / maxScroll;
             const float thumbY = content.y + (viewH - thumbH) * t;
             fill(dl, ImVec4(trackX, content.y, trackX + 3.0f * scale, content.w),
-                 ImVec4(1, 1, 1, 1), 0.04f * alpha, 1.5f * scale);
+                 ImVec4(1, 1, 1, 1), 0.04f * c.a, 1.5f * scale);
             fill(dl, ImVec4(trackX, thumbY, trackX + 3.0f * scale, thumbY + thumbH),
                  ImVec4(c.accent.Value.x, c.accent.Value.y, c.accent.Value.z, 1.0f),
-                 0.55f * alpha, 1.5f * scale);
+                 0.55f * c.a, 1.5f * scale);
         }
     } else {
-        // Settings and Configs can both overflow, so they share the same wheel
-        // scroll. The scrollable height comes from what the body reported LAST
-        // frame: the bodies are laid out as they draw, so measuring first would
-        // mean running the whole layout twice. Any error self-corrects on the next
-        // frame, and the clamp below keeps it in range meanwhile.
         static float bodyHeight[kExtraCount + 1] = {};
         const float viewH = content.w - content.y;
         const float maxScroll = std::max(0.0f, bodyHeight[g_tab] - viewH);
@@ -4105,21 +3667,12 @@ void ClickGUI::OnRender() {
 
         const ImVec4 area(content.x, content.y - g_scroll + contentSlide, content.z, content.w);
         if (g_tab == 1) {
-            // This module owns the appearance settings; UpdateSettingsVisibility
-            // hides the custom palette slots the current theme does not use. The
-            // Settings body is always on screen, so dropdowns here are gated on
-            // enumExtended alone rather than on showSettings (which nothing sets
-            // for the menu module itself).
             UpdateSettingsVisibility();
             tickAnims(this, dt, /*bodyOpen=*/true);
             bodyHeight[1] = drawSettingsBody(cc, this, area);
         } else if (g_tab == 2) {
             bodyHeight[2] = drawConfigsBody(cc, area);
         } else if (g_tab == 3) {
-            // The Themes tab draws the Custom palette rows through drawSetting,
-            // whose dropdown/picker reveal is driven by each setting's
-            // enumSlide — without ticking them here the color pickers never
-            // opened (the animation only ran on the module and Settings tabs).
             UpdateSettingsVisibility();
             tickAnims(this, dt, /*bodyOpen=*/true);
             bodyHeight[3] = drawThemesBody(cc, area);
@@ -4134,19 +3687,16 @@ void ClickGUI::OnRender() {
             const float t = g_scroll / maxScroll;
             const float thumbY = content.y + (viewH - thumbH) * t;
             fill(dl, ImVec4(trackX, content.y, trackX + 3.0f * scale, content.w),
-                 ImVec4(1, 1, 1, 1), 0.04f * alpha, 1.5f * scale);
+                 ImVec4(1, 1, 1, 1), 0.04f * c.a, 1.5f * scale);
             fill(dl, ImVec4(trackX, thumbY, trackX + 3.0f * scale, thumbY + thumbH),
                  ImVec4(c.accent.Value.x, c.accent.Value.y, c.accent.Value.z, 1.0f),
-                 0.55f * alpha, 1.5f * scale);
+                 0.55f * c.a, 1.5f * scale);
         }
     }
     dl->PopClipRect();
 
     } // Panel / Columns mode branch
 
-    // --- keybind capture ------------------------------------------------------
-    // Both the module rows and the loose-int rows (eject key) capture here, so
-    // the one-frame grace and the mouse-button filter are shared.
     if (g_binding || g_keyTarget) {
         // One frame of grace so the click that armed the row is not itself
         // captured as the key.
@@ -4202,6 +3752,7 @@ void ClickGUI::OnRender() {
                ImVec4(c.accent.Value.x, c.accent.Value.y, c.accent.Value.z, 1.0f), 0.5f,
                8.0f * scale, 1.0f);
 
+        const ScopedGuiPointer pointer(on);
         ImGui::SetNextWindowPos(ImVec2(bx, by));
         ImGui::SetNextWindowSize(ImVec2(bw, bh));
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
@@ -4212,6 +3763,7 @@ void ClickGUI::OnRender() {
         ImGui::Begin("##SunsteadStrEdit", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+        const UiDrawRange editorRange(ImGui::GetWindowDrawList());
         char buf[256];
         strncpy_s(buf, ss->mValue.c_str(), sizeof(buf) - 1);
         ImGui::PushItemWidth(bw - 18.0f);
@@ -4223,6 +3775,7 @@ void ClickGUI::OnRender() {
         ImGui::End();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(3);
+        editorRange.finish(g_uiTransform.fade);
 
         text(dl, c.font, 12.5f * scale,
              ImVec2(px + 20.0f * scale, py + ph - 26.0f * scale),
@@ -4234,18 +3787,14 @@ void ClickGUI::OnRender() {
         }
     }
 
-    // --- tooltip, on the foreground so no ImGui window can cover it ----------
-    // Fades with the menu instead of popping out at a hard alpha gate, GLIDES
-    // after the cursor instead of snapping to it, and pops in with a small
-    // spring whenever the hovered target (and thus the text) changes.
+    dl->PopClipRect();
+    mainRange.finish(alpha);
+
     if (g_tipShow && !g_tip.empty() && alpha > 0.35f) {
-        const float tipA = std::clamp((alpha - 0.35f) / 0.45f, 0.0f, 1.0f);
+        const float tipA = 1.0f;
         static ImVec2      s_tipPos(-1.0f, -1.0f);  // eased position
         static std::string s_tipText;               // last rendered text
         static float       s_tipPop = 1.0f;         // 0..1 appear progress
-        // Dwell: the tooltip only appears after the cursor has rested on the
-        // SAME target for a moment — no flicker of plates while sweeping the
-        // mouse across rows.
         static std::string s_dwellText;
         static float       s_dwell = 0.0f;
         if (g_tip == s_dwellText) {
@@ -4259,8 +3808,7 @@ void ClickGUI::OnRender() {
         if (g_tip != s_tipText) { s_tipText = g_tip; s_tipPop = 0.0f; }
         s_tipPop += (1.0f - s_tipPop) * std::clamp(dt * 15.0f, 0.0f, 1.0f);
         if (s_tipPop > 0.995f) s_tipPop = 1.0f;
-        // Gentle entrance: a plain ease-out fade with a whisper of scale —
-        // no springy overshoot (the bouncy variant read as jittery).
+
         const float pop = easeOutCubic(s_tipPop);
 
         const ImVec2 target(g_tipPos.x, g_tipPos.y);
@@ -4273,27 +3821,26 @@ void ClickGUI::OnRender() {
         s_tipPos.y += (target.y - s_tipPos.y) * chase;
 
         ImDrawList* fg = ImGui::GetForegroundDrawList();
+        const UiDrawRange fgRange(fg);
         const float fs = 13.0f * scale;
         const float tw = measure(c.font, fs, g_tip) + 18.0f * scale;
         const float th = fs + 14.0f * scale;
-        // Fresh tooltips rise a few pixels while they pop in...
+
         float tx = s_tipPos.x, ty = s_tipPos.y + (1.0f - pop) * 3.0f * scale;
         if (tx + tw > screen.x - 8.0f) tx = screen.x - tw - 8.0f;
         if (ty + th > screen.y - 8.0f) ty = screen.y - th - 8.0f;
-        // ...and settle with a barely-there scale (0.96 -> 1) around centre.
+
         const float sc = 0.96f + 0.04f * pop;
         const float sw = tw * sc, sh = th * sc;
         const ImVec4 tip(tx + (tw - sw) * 0.5f, ty + (th - sh) * 0.5f,
                          tx + (tw + sw) * 0.5f, ty + (th + sh) * 0.5f);
         const float tAlpha = tipA * std::clamp(s_tipPop * 2.0f, 0.0f, 1.0f);
-        // Clean flat tooltip, kept LIGHT: a translucent dark plate with a
-        // hairline border and the text — no drop shadow, no dim halo, no
-        // accent stripe. Square corners.
         fill(fg, tip, ImVec4(0.070f, 0.075f, 0.098f, 1.0f), 0.80f * tAlpha, 0.0f);
         stroke(fg, tip, ImVec4(1, 1, 1, 1), 0.06f * tAlpha, 0.0f, 1.0f);
         text(fg, c.font, fs,
              ImVec2((tip.x + tip.z) * 0.5f - measure(c.font, fs, g_tip) * 0.5f,
                     (tip.y + tip.w) * 0.5f - fs * 0.5f),
              g_tip, kTextHi, tAlpha, false);
+        fgRange.finish(alpha);
     }
 }

@@ -57,13 +57,6 @@ bool sehRestoreState(SDK::Actor* lp,
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// NO INPUT FREEZE. An earlier revision froze the local input pipeline with the
-// engine's Immobile flag — but that flag's follow-up system ZEROES the state
-// vector's velocity every tick (it is the "frozen player" state servers
-// apply), which deleted the flight velocity we had just written: the player
-// could not move at all. The held-WASD double-drive concern is moot anyway:
-// outgoing movement packets are cancelled below, so the vanilla walk only
-// moves the local body in the same direction the flight keys already push it.
 
 // POD-only helpers so the Module methods themselves never mix __try with
 
@@ -107,19 +100,6 @@ bool sehReadInt64(const void* base, uintptr_t offset, int64_t& out) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Through Walls: collapse the flying body's AABB to a POINT (height -> 0,
-// width -> 0.001) — a zero-height box has no vertical extent for the
-// horizontal-collision pass to resolve against (the exact mechanism NoClip
-// uses, which is proven to work on this build; the old width-only shrink
-// still collided). Client game type additionally set to Spectator where the
-// engine consults it (also disables gravity, which fits flight). Both
-// restored on disable.
-//
-// NOTE on the `on` parameter: on=true APPLIES (save + collapse + Spectator),
-// on=false RESTORES. The call sites used to be inverted - OnTick restored
-// every tick (so flying through blocks never actually worked) and OnDisable
-// APPLIED (leaving the player stuck in Spectator mode after turning FreeCam
-// off). Fixed.
 int   sehTW_savedType = -1;
 float sehTW_savedW = 0.f;
 float sehTW_savedH = 0.f;
@@ -166,10 +146,6 @@ bool sehThroughWalls(SDK::Actor* lp, bool on) {
     return true;
 }
 
-// Is the MINECRAFT window the foreground window? GetAsyncKeyState is
-// process-global: without this gate the fly keys answered while the game was
-// in the background. The client also runs a GUI thread while a screen is
-// open — the hud_screen check in OnTick covers that half.
 bool sdkIsGameFocused() {
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
@@ -184,11 +160,6 @@ bool sdkIsGameFocused() {
 void FreeCam::OnTick() {
     if (!IsEnabled() || !mActive || mLagbacked) return;
 
-    // INPUT GATES: only drive the camera when the game window is focused AND
-    // the HUD is the active screen. Without these the WASD keys flew the
-    // camera while typing in chat / any GUI, and even while Minecraft ran in
-    // the background (GetAsyncKeyState is process-global). With them, keys
-    // reach FreeCam exactly when vanilla movement would receive them.
     if (!sdkIsGameFocused()) return;
     if (!SDK::isGameplayInputActive()) return;
 
@@ -230,16 +201,9 @@ void FreeCam::OnTick() {
 
     const float vy = space ? speed : (shift ? -speed : 0.f);
 
-    // Through Walls (default on): collapse the AABB to a point and set the
-    // client game type to Spectator. Re-applied every tick — the game rewrites
-    // its synched data. Restored on disable.
     if (GetThroughWalls()) {
         sehThroughWalls(lp, true);
         mThroughWallsApplied = true;
-        // Spectator has no gravity, so a zero vertical velocity is a stable
-        // hover. (The old +0.08 "anti-gravity" feed was written for a
-        // gravity-active body; with Spectator it is a pure upward drift - the
-        // "glide pulls me into the air" effect.)
         const float hoverVy = (space || shift) ? vy : 0.f;
         sehSetVelocity(lp, vx, hoverVy, vz);
         return;
@@ -257,9 +221,6 @@ FreeCam::FreeCam()
     AddSetting(new BoolSetting("Show Box", "Draw frozen server position", true));
     AddSetting(new BoolSetting("Disable On Lagback", "Turn off if the server teleports you", true));
     AddSetting(new BoolSetting("Show Position", "Draw the live freecam position as text in the corner", false));
-    // Ghost body: your own player MODEL left standing at the enable point,
-    // instead of / in addition to the wireframe box. Appended after the four
-    // original settings so every index-based getter above keeps its slot.
     AddSetting(new BoolSetting("Show Model", "Leave your player model standing at the enable point", true));
     canBind = true;
 }
@@ -332,11 +293,6 @@ void FreeCam::OnEnable() {
         return;
     }
     mActive = true;
-    // No input freeze: the Immobile flag's follow-up system zeroes the state
-    // vector's velocity every tick, which deleted the flight velocity and
-    // left the player unable to move. The velocity write in OnTick IS the
-    // only movement driver now; held WASD cannot double-drive anything that
-    // matters because outgoing movement packets are cancelled below.
     mImmobileApplied = false;
 }
 
@@ -356,10 +312,6 @@ void FreeCam::OnDisable() {
         // Kill any flight velocity so the body does not keep drifting after
         // the restore.
         if (lp) sehZeroVelocity(lp);
-        // Skip the restore after a server correction storm: the server has
-        // authoritatively moved us, so writing the pre-FreeCam position back
-        // would fight it. The full-size AABB box is still restored in every
-        // case so nothing shrunken can outlive the module.
         if (lp && !mLagbacked) {
             sehRestoreState(lp, mFrozenPos, mFrozenPosOld, mFrozenVel,
                             mFrozenAabbMin, mFrozenAabbMax,
@@ -374,10 +326,6 @@ void FreeCam::OnDisable() {
 // OnTick (velocity-driven) replaces it entirely.
 void FreeCam::OnUpdate() {}
 
-// Outgoing movement packets are dropped: the server's copy of the player just
-// stands at the enable point with zero input (same scheme as the reference
-// clients). Incoming corrections are dropped in OnPacketReceive — this hook
-// only guarantees the server never learns the body moved.
 void FreeCam::OnPacketSend(SDK::Packet* packet, int packetId, bool& cancel) {
     if (!IsEnabled() || !mActive || mLagbacked || !packet) return;
 
@@ -387,20 +335,6 @@ void FreeCam::OnPacketSend(SDK::Packet* packet, int packetId, bool& cancel) {
     }
 }
 
-// Incoming movement packets are dropped, not spoofed (reverse-engineered on
-// 1.26.42.01): the client applies a server correction by REWINDING the local
-// body — MovePlayer is the legacy teleport and CorrectPlayerMovePrediction is
-// the server-auth "your predicted position is wrong, go here" — so leaving
-// either uncancelled yanked the flying body back to the enable point over and
-// over ("it teleports backwards"). Cancelling both keeps the body in free
-// flight; the server-side copy just stays at the frozen position, which the
-// cancelled outgoing packets above already guarantee.
-//
-// A single dropped correction is NOISE (servers send them on idle resyncs once
-// the outgoing packets stop) — it must NOT toggle the module: that turned the
-// dropped rewind into a disable + restore, i.e. the same teleport through the
-// back door. Only a genuine STORM of corrections (server hard-fighting us)
-// trips the user's "Disable On Lagback" policy.
 void FreeCam::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel) {
     if (!IsEnabled() || !mActive || mLagbacked || !packet) return;
 
@@ -430,9 +364,6 @@ void FreeCam::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel) {
     // Drop the packet BEFORE the game's handler rewinds the body.
     cancel = true;
 
-    // Storm detector: > 8 corrections inside 3 s means the server is
-    // aggressively fighting the frozen position (respawn / anticheat kick
-    // sequence) — honour the lagback policy in that case only.
     const unsigned long long now = GetTickCount64();
     if (now - mStormStartMs > 3000ull) {
         mStormStartMs = now;

@@ -53,10 +53,6 @@ namespace ColorUtils {
         return ImColor(base.Value.x * w, base.Value.y * w, base.Value.z * w, base.Value.w);
     }
 
-    // The `index` span that corresponds to ONE full palette cycle in
-    // getThemedColor. The ClickGUI stretches exactly one period across the
-    // whole menu's diagonal, so the spatial gradient stays a full cycle no
-    // matter what Color Speed (which only changes how fast it plays) is set to.
     inline float getThemedPeriod() {
         Module* iface = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
         if (iface) {
@@ -77,15 +73,13 @@ namespace ColorUtils {
     }
 
     inline ImColor getThemedColor(float index, uint64_t ms = 0) {
-        // Appearance settings live on the ClickGUI module (they used to be their
-        // own settings-only "Interface" module). Read by name so the setting order
-        // in the ctor is free to change.
         Module* iface = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
         if (iface) {
             int themeIdx = 0;
             int gradStyle = 0; // 0=Smooth 1=Wave
             float speed = 2.0f;
             float sat = 1.0f;
+            float themeStrength = 1.0f;
             int numColors = 3;
             std::vector<ImColor> customColors;
 
@@ -99,30 +93,14 @@ namespace ColorUtils {
                     speed = static_cast<NumberSetting*>(setting)->mValue;
                 } else if (setting->mName == "Saturation") {
                     sat = static_cast<NumberSetting*>(setting)->mValue;
+                } else if (setting->mName == "Theme Strength") {
+                    themeStrength = static_cast<NumberSetting*>(setting)->mValue;
                 } else if (setting->mName == "Colors") {
                     numColors = (int)static_cast<NumberSetting*>(setting)->mValue;
                 }
             }
 
             ImColor base(255, 255, 255);
-            // Themes. Index order IS the enum order in ClickGUI's "Theme" setting
-            // and is persisted by ConfigManager as an int, so inserting a theme in
-            // the middle silently re-themes every existing config — append only.
-            //   0 Aurora        teal -> indigo -> violet, the default
-            //   1 Ember         amber -> crimson
-            //   2 Frost         ice blue -> white -> steel
-            //   3 Neon          magenta -> cyan, high chroma
-            //   4 Mint          spring green -> aqua
-            //   5 Void          deep indigo -> plum, low luminance
-            //   6 Sakura        blush pink -> pale gold
-            //   7 Spectrum      full-hue sweep (was "Rainbow")
-            //   8 Custom        user palette
-            //   9..16 Rise-style themes (Fire, Water, Smoke, Sunset, Cotton
-            //             Candy, Forest, Ocean, Purple Haze) - appended after
-            //             Custom so persisted indices and the == 8 Custom
-            //             checks keep their meaning.
-            //   17..22 Appended later (Lemonade, Copper, Abyss, Orchid,
-            //             Safari, Cobalt) - same rule: append only.
             if (themeIdx == 0) { // Aurora
                 std::vector<ImColor> colors = {
                     ImColor(58, 226, 199),
@@ -308,6 +286,8 @@ namespace ColorUtils {
             } else {
                 base = LerpColors(speed, index, { ImColor(58, 226, 199), ImColor(129, 96, 240) }, ms);
             }
+            const float blend = 0.35f + 0.65f * std::clamp(themeStrength, 0.0f, 1.0f);
+            base = LerpImColor(ImColor(255, 255, 255), base, blend);
             return applyGradientStyle(base, index, gradStyle, speed, ms);
         }
 

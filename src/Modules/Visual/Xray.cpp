@@ -7,7 +7,7 @@
 #include "../../SDK/World/BlockScan.h"
 #include "../../Utils/MiscUtils/ColorUtils.hpp"
 #include "../Setting.h"
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -20,11 +20,6 @@
 #include <utility>
 #include <vector>
 
-// The scan half is the proven BlockESP machinery (progressive budget-limited
-// volume walk, double-buffered result swap, legacy classification cache);
-// classification/colour/projection come from the shared SDK::BlockScan. It is
-// only the OPTIONAL "Overlay Boxes" extra now — the xray itself is the
-// tessellator hook below.
 using namespace SDK::BlockScan;
 
 static std::atomic<bool>      g_texRedirectOn{ false };
@@ -105,9 +100,6 @@ static TessFn oTess = nullptr;
 static std::atomic<uint64_t> g_cls[4096];            // (BlockLegacy* << 8) | (slot + 1)
 static std::atomic<unsigned> g_dbgSeen{ 0 }, g_dbgHidden{ 0 }, g_dbgKept{ 0 }, g_dbgUnknown{ 0 };
 static std::atomic<bool>     g_clsFlushPending{ false };
-// Distinct dispatcher caller RVAs (first 8) + per-site hit counts: proves
-// WHICH mesher paths reach the hook while the sweep rebuilds. Locked only
-// until the table is full (steady state = one atomic each).
 static uintptr_t s_callSites[8] = {};
 static unsigned  s_callCounts[8] = {};
 static std::atomic<int> s_callSiteCount{ 0 };
@@ -166,10 +158,6 @@ static int classifySlot(void* legacy) {
     return idx;
 }
 
-// Cached classification shared by every xray hook (dispatcher, layer resolver,
-// mask getter). slot: 0..8 = ore bit index, 9 = kBitAlways, 15 = not an ore,
-// -1 = name unreadable -> vanilla. Runs on chunk-build worker threads; POD-only
-// reads under SEH with a lock-free direct-mapped cache.
 static int classifyCached(void* legacy) {
     if (!legacy) return -1;
     if (g_clsFlushPending.exchange(false, std::memory_order_relaxed))
@@ -228,12 +216,6 @@ static char __fastcall hkTessellate(void* tess, void* ctx, void* block, void* po
     if (!g_texRedirectOn.load(std::memory_order_relaxed) || !tess || !block)
         return oTess(tess, ctx, block, pos, a5);
 
-    // _ReturnAddress() - 1: the detour runs on the original instruction
-    // stream, so the value the caller's call pushed is the byte AFTER the
-    // call - recording it RAW pointed the caller table at mid-instruction
-    // addresses (the +1C97948 mystery: an E8 boundary that does not exist).
-    // One byte back lands on the CALL instruction start, which is a real
-    // boundary and dedupes per call site correctly.
     noteCaller(reinterpret_cast<uintptr_t>(_ReturnAddress()) - 1);
     g_dbgSeen.fetch_add(1, std::memory_order_relaxed);
     void* legacy = sehReadLegacyPtr(block);
@@ -283,10 +265,6 @@ static std::atomic<unsigned> g_buildCount{ 0 };
 static std::atomic<unsigned> g_buildLogged{ 0 };
 
 static void __fastcall hkBuild(void* rc, void* ctx, void* a3, int a4, char a5, void* a6) {
-    // Count EVERY build (the sub_141CA2AB0 wrapper is the ONLY place tessella-
-    // tion results are copied into the render chunk, whichever path produced
-    // them): the a5==1 filter I briefly shipped made "section builds total"
-    // read 0 while the sweep was actually working and hid the real signal.
     {
         const unsigned n = g_buildCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (g_buildLogged.load(std::memory_order_relaxed) < 30 || n % 1000 == 0) {
@@ -295,9 +273,6 @@ static void __fastcall hkBuild(void* rc, void* ctx, void* a3, int a4, char a5, v
             // byte after the call (mid-instruction junk, same as noteCaller).
             const uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress()) - 1;
             const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-            // Blocks through the dispatcher since the previous build: shows
-            // whether a build is a FULL section (~hundreds-thousands of
-            // blocks) or a tiny partial one.
             static std::atomic<unsigned> s_seenAtLastBuild{ 0 };
             const unsigned seenNow = g_dbgSeen.load(std::memory_order_relaxed);
             const unsigned perBuild = seenNow - s_seenAtLastBuild.exchange(seenNow, std::memory_order_relaxed);
@@ -319,9 +294,8 @@ void installTextureHook() {
         const uintptr_t fn = SigManager::GetInstance().BlockTessellator_tessellateInWorld;
         if (!fn) {
             LOG_WARN("BlockTessellator::tessellateInWorld signature not resolved - xray unavailable", "Xray");
-        } else if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkTessellate),
-                                 reinterpret_cast<LPVOID*>(&oTess)) != MH_OK
-                   || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
+        } else if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkTessellate),
+                                 reinterpret_cast<LPVOID*>(&oTess))) {
             oTess = nullptr;
             LOG_ERROR("BlockTessellator::tessellateInWorld hook failed", "Xray");
         } else {
@@ -332,9 +306,8 @@ void installTextureHook() {
         const uintptr_t fn = SigManager::GetInstance().BlockRenderLayerResolver;
         if (!fn) {
             LOG_WARN("BlockRenderLayerResolver signature not resolved - byte-path layer redirect unavailable", "Xray");
-        } else if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkResolver),
-                                 reinterpret_cast<LPVOID*>(&oResolver)) != MH_OK
-                   || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
+        } else if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkResolver),
+                                 reinterpret_cast<LPVOID*>(&oResolver))) {
             oResolver = nullptr;
             LOG_ERROR("BlockRenderLayerResolver hook failed", "Xray");
         } else {
@@ -345,9 +318,8 @@ void installTextureHook() {
         const uintptr_t fn = SigManager::GetInstance().MesherBuild;
         if (!fn) {
             LOG_WARN("MesherBuild signature not resolved - rebuild diagnostic unavailable", "Xray");
-        } else if (MH_CreateHook(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkBuild),
-                                 reinterpret_cast<LPVOID*>(&oBuild)) != MH_OK
-                   || MH_EnableHook(reinterpret_cast<LPVOID>(fn)) != MH_OK) {
+        } else if (!HookEngine::Create(reinterpret_cast<LPVOID>(fn), reinterpret_cast<LPVOID>(&hkBuild),
+                                 reinterpret_cast<LPVOID*>(&oBuild))) {
             oBuild = nullptr;
             LOG_ERROR("MesherBuild hook failed", "Xray");
         } else {
@@ -431,10 +403,6 @@ using SetBlockFn = bool(__fastcall*)(void* blockSource, const int* pos, const vo
 // packedPos = { x&15, z&15, (uint16)(y - dimension minY) }.
 using ChunkSetBlockFn = __int64(__fastcall*)(void* chunk, const unsigned char* packedPos,
                                              const void* block, void* blockSource);
-// BlockSource::fireBlockChanged(this, BlockPos const&, layer, Block const& new,
-//                               Block const& old, flags, msg, target, extra)
-// - vtable slot 63 on 1.26.50.04 (sub_142D8B9E0: iterates the subscriber list
-// at this+0x68..0x70 and forwards to each subscriber's vtable slot 4).
 using FireBlockChangedFn = void(__fastcall*)(void* blockSource, const int* pos, unsigned layer,
                                              const void* newBlock, const void* oldBlock,
                                              int flags, void* msg, void* target, void* extra);
@@ -451,9 +419,6 @@ static unsigned  s_sweepNotified = 0, s_sweepSwapped = 0;
 static unsigned  s_swappedOfficial = 0, s_swappedChunk = 0;   // per-path swap wins
 static unsigned long long s_buildsAtStart = 0;                // g_buildCount at sweep start
 static unsigned long long s_sweepStartMs = 0;                 // wall clock at sweep start
-// Coverage-complete pass state (the "everything transparent except ores" fix):
-// columns ordered centre-out in rings around the player, one chunk resolve
-// per column, empty sections skipped via the sub-chunk storage pointer.
 static std::vector<std::pair<int, int>> s_colOrder;   // (dx,dz) ring order
 static long long s_curColIdx = -1;                    // column s_curChunk belongs to
 static void*     s_curChunk = nullptr;                // LevelChunk* of that column
@@ -469,24 +434,10 @@ static unsigned long long s_verdictBuilds = 0;       // builds snapshot at finis
 static unsigned long long s_verdictSeen = 0;         // hook-blocks snapshot at finish
 static bool              s_diagLogged = false;       // per-sweep one-shot diag line
 static unsigned          s_serialLogged = 0;         // serial-readback lines this sweep
-// Hard wall-clock cap for one sweep. With the coverage rewrite every section
-// of a 24-chunk radius takes at most one swap, so 45 s is a generous bound
-// even when the builder queue drains slowly (the old 20 s cut full sweeps
-// short on busy worlds).
 static constexpr unsigned long long kSweepTimeoutMs = 45000;
-// Distinct safe Block* harvest: two known-different plain blocks give the
-// swap pair (write partner + restore). Filled lazily from the world while
-// probing; stays empty only in a perfectly uniform unreadable world.
 static SDK::Block* s_swapPool[2] = { nullptr, nullptr };
 static int         s_swapCount = 0;
-// Keep-mask snapshot of the sweep's TARGET state; a change restarts the sweep
-// so ore-toggle edits re-tessellate the world too. Atomic: written from the
-// module tick thread, read by the game update thread.
 static std::atomic<uint32_t> s_sweepMask{ 0xFFFFFFFFu };
-// Pending sweep request (radius in blocks, -1 = none). Requests come from the
-// module toggle/keys (any thread); the sweep itself only ever runs on the game
-// update thread (Xray_StepRetextureSweep), so the state above stays
-// single-threaded.
 static std::atomic<int>      s_reqRadius{ -1 };
 
 static SetBlockFn resolveSetBlock() {
@@ -616,9 +567,6 @@ static bool sehSwapChunk(ChunkSetBlockFn setBlock, void* chunk, const unsigned c
 
 static bool sehSwapBlockSource(SetBlockFn setBlock, void* src, const int* pos,
                                SDK::Block* partner, SDK::Block* original) {
-    // The bool returns are the gate verdict: BlockSource::setBlock refuses
-    // (returns false) when its gate fails or the write is a same-block no-op.
-    // A silent ignore here is exactly how a dead sweep pretends to work.
     __try {
         if (!setBlock(src, pos, partner, 2)) return false;
         if (!setBlock(src, pos, original, 2)) {
@@ -635,13 +583,6 @@ static bool sehSwapBlockSource(SetBlockFn setBlock, void* src, const int* pos,
 }
 
 static void startRetextureSweepAt(int radiusBlocks) {
-    // The user-facing Radius setting (16..128) is the BOX-SCAN radius for the
-    // optional overlay. The re-tessellation sweep MUST cover the whole render
-    // distance regardless: anything narrower leaves a visible ring of
-    // untouched chunks ("делает прозрачной только малую часть" — a 4-chunk
-    // sweep = 64 blocks while the render distance is 8-12 chunks). 24 chunks
-    // (384 blocks) covers every realistic render distance; sections beyond it
-    // are unloaded anyway and are skipped by the probe.
     (void)radiusBlocks;
     s_sweepR = 24;
 
@@ -673,10 +614,6 @@ static void startRetextureSweepAt(int radiusBlocks) {
     const int cols = s_sweepR * 2 + 1;
     s_sweepCx = (int)std::floor(pos.x) >> 4;
     s_sweepCz = (int)std::floor(pos.z) >> 4;
-    // Centre-out ring order: the visible area around the player is covered
-    // FIRST, the horizon last. (The old row-major order started in the far
-    // corner, so the world turned transparent in seemingly random patches —
-    // the "only some trees" symptom.)
     s_colOrder.clear();
     s_colOrder.reserve((size_t)cols * (size_t)cols);
     for (int ring = 0; ring <= s_sweepR; ++ring) {
@@ -732,9 +669,6 @@ static void finishSweep() {
                  " kept " + std::to_string(g_dbgKept.load()) +
                  " unknown " + std::to_string(g_dbgUnknown.load()),
              "Xray");
-    // Builds lag the sweep by seconds (the builder queue drains after the
-    // last swap), so the real verdict is measured 5 s later in
-    // Xray_StepRetextureSweep.
     s_verdictAtMs = GetTickCount64() + 5000;
     s_verdictBuilds = g_buildCount.load(std::memory_order_relaxed);
     s_verdictSeen = g_dbgSeen.load(std::memory_order_relaxed);
@@ -791,18 +725,12 @@ static bool sweepUnsafeName(const char* n) {
     return false;
 }
 
-// Exact air test on the registered name. Substring matching ("air" in name)
-// is unusable here: "oak_stairs", "warped_stairs" etc. all contain "air" —
-// a stairs block must NOT be skipped as air.
 static bool sweepNameIsAir(const char* n) {
     return !std::strcmp(n, "air") || !std::strcmp(n, "minecraft:air") ||
            !std::strcmp(n, "cave_air") || !std::strcmp(n, "void_air") ||
            !std::strcmp(n, "minecraft:cave_air") || !std::strcmp(n, "minecraft:void_air");
 }
 
-// entry+0x00 / entry+0x04 of the sub-chunk table (content/render serials) —
-// the "did the swap actually move the section state" readback, the same
-// diagnostic the old logs used ("serial0=-2147483648 serial1=0 -> 0,0").
 static bool sehReadSubchunkSerials(void* chunk, int secIdx, int* s0, int* s1) {
     __try {
         if (!sdk_safe_ptr(chunk, 0x150)) return false;
@@ -827,12 +755,6 @@ static int sehReadChunkState(void* chunk) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return -2; }
 }
 
-// Per-section "has blocks" test straight out of the LevelChunk sub-chunk
-// table (layout verified against sub_1432C31D0: vector at chunk+0x140/+0x148,
-// 104-byte entries, index = (y - minY) >> 4, entry+0x38 = SubChunk*). A null
-// SubChunk* means the section has no block storage at all (all air) — probing
-// it can only waste a rebuild, which is what the old sweep did thousands of
-// times per pass.
 static bool sehSectionHasStorage(void* chunk, int secIdx) {
     bool has = false;
     __try {
@@ -852,9 +774,6 @@ static bool sehSectionHasStorage(void* chunk, int secIdx) {
     return has;
 }
 
-// Pick a swap partner from the harvested pool (any block whose BlockLegacy is
-// readable right now and differs from `exclude`). Returns nullptr when the
-// pool has nothing usable this tick.
 static SDK::Block* pickPartner(SDK::BlockLegacy* exclude) {
     for (int j = 0; j < s_swapCount; ++j) {
         SDK::Block* cand = s_swapPool[j];
@@ -867,26 +786,8 @@ static SDK::Block* pickPartner(SDK::BlockLegacy* exclude) {
     return nullptr;
 }
 
-// Write-path priority. MEASURED, per session:
-//   * 14:57 session: official=2974 / chunk=5  -> 3 577 section builds,
-//     684 424 blocks tessellated (the world DID turn transparent);
-//   * 09:58 session: chunk-first, official=0 / chunk=360 -> ~30 builds,
-//     187 blocks (nothing visible changed).
-// The official BlockSource::setBlock carries the engine's own broadcast
-// (sub_142D80790) which the re-mesh scheduler actually listens to; the direct
-// LevelChunk::setBlock can succeed as a WRITE on server/sub-client worlds
-// while scheduling no rebuild. Official FIRST now; chunk as fallback. If the
-// first 32 swaps still produce no builds, the sweep flips the priority once
-// and retries (see s_officialFirst / s_flipChecked below).
 static std::atomic<bool> s_officialFirst{ true };
 
-// Direct render-serial invalidation — the ONLY signal that does not depend
-// on the engine accepting the content write (the 09:58 server session took
-// 360/360 chunk-path writes and scheduled ~no rebuilds). The coordinator
-// rebuilds sections whose stored built-serial differs from the current one,
-// so a strictly increasing bump can never collide with a built snapshot.
-// Mirrors the real write's arithmetic: +0x00 = content serial, +0x04 =
-// render serial synced as max(serial0, 0) (verified in sub_1432C31D0).
 static unsigned s_serialEpoch = 16;
 static void sehForceSectionSerial(void* chunk, int secIdx, unsigned* outVal) {
     __try {
@@ -907,11 +808,6 @@ static void sehForceSectionSerial(void* chunk, int secIdx, unsigned* outVal) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-// One invalidation action at a world position: direct block-changed
-// notification, the guaranteed render-serial bump for this section, then
-// partner-in / original-back through the two write paths in s_officialFirst
-// order. The world ends each call with the SAME content it started with;
-// only the renderer is told that something changed.
 static bool sweepSwapAt(ChunkSetBlockFn chunkSetBlock, void* chunk,
                         SetBlockFn setBlock, void* src,
                         FireBlockChangedFn fireBlockChanged, int minY,
@@ -952,41 +848,17 @@ static bool sweepSwapAt(ChunkSetBlockFn chunkSetBlock, void* chunk,
     return swapped;
 }
 
-// POD-only body (SEH-legal): one budgeted step of the sweep.
-//
-// Coverage-complete invalidation pass (re_findings_xray.md §5 — the "only
-// some blocks turn transparent" fix):
-//   * columns are visited centre-out in rings (visible area first);
-//   * a column's chunk is resolved ONCE and the whole column is skipped when
-//     it is not loaded (90% of the old sweep's probes died on exactly this);
-//   * a section is skipped without a single getBlock when its sub-chunk has
-//     no block storage (all air — nothing to hide, nothing to rebuild);
-//   * the swap target is a REAL block whenever one is probeable; the air slot
-//     is only the fallback for sections that provably store blocks (a swap on
-//     air is a net-zero content change that costs a full rebuild while hiding
-//     nothing).
 static void sweepStepRaw(void* src) {
     ChunkSetBlockFn chunkSetBlock = resolveChunkSetBlock();
     SetBlockFn setBlock = resolveSetBlock();
     FireBlockChangedFn fireBlockChanged = resolveFireBlockChanged(src);
     if (!chunkSetBlock && !setBlock) {
-        // Neither write path resolved (signatures missed on this build): the
-        // sweep could never invalidate a single section, and without this
-        // early-out it would spin silently forever while only naturally
-        // re-meshed sections (leaf decay near trees) ever showed the xray.
-        // Fail loud instead of pretending to sweep.
         s_sweepActive = false;
         LOG_ERROR("re-mesh sweep aborted: LevelChunk::setBlock and BlockSource::setBlock "
                   "are both unresolved - already loaded chunks cannot re-tessellate", "Xray");
         return;
     }
 
-    // The cached column chunk and the swap-partner pool must never outlive
-    // ONE call: chunks unload on the level tick, so a LevelChunk*/Block*
-    // carried over from a previous tick could dangle (heap memory is often
-    // still mapped, so SEH alone cannot catch that). Re-resolving costs one
-    // vtable call per tick at most; the pool refills from the world on the
-    // first probes of the call.
     s_curChunk = nullptr;
     s_curColIdx = -1;
     s_swapPool[0] = nullptr;
@@ -998,10 +870,6 @@ static void sweepStepRaw(void* src) {
         { 8, 8, 8 }, { 3, 5, 11 }, { 12, 11, 4 }, { 5, 13, 9 },
         { 10, 2, 14 }, { 1, 9, 2 }, { 14, 6, 7 }, { 7, 1, 12 },
     };
-    // Empty-section skips are pure pointer reads now, so the probe budget is
-    // generous; setBudget paces the invalidations near the empirically proven
-    // rate of the 14:57 session (~13 swaps/tick produced 3 577 builds there;
-    // flooding the scheduler with hundreds per tick in 09:58 produced ~30).
     const long long probeBudget = 4096;     // sections examined per tick
     const int setBudget = 24;               // section rebuilds triggered per tick
     int sets = 0;
@@ -1069,10 +937,6 @@ static void sweepStepRaw(void* src) {
             }
             if (sweepUnsafeName(nm)) continue;
 
-            // Harvest swap partners: the first two distinct plain blocks,
-            // compared by BlockLegacy (different legacy = different block).
-            // SEH-guarded: the pool outlives chunk reloads, so never trust a
-            // raw dereference here.
             if (s_swapCount < 2) {
                 bool known = false;
                 for (int j = 0; j < s_swapCount; ++j) {
@@ -1084,9 +948,6 @@ static void sweepStepRaw(void* src) {
             SDK::Block* partner = pickPartner(legacy);
             if (!partner) continue;                   // pool only holds this legacy so far
 
-            // The official BlockSource::setBlock path FIRST (its broadcast is
-            // what the re-mesh scheduler provably listens to — see
-            // "Write-path priority"), direct LevelChunk::setBlock as fallback.
             ++sets;
             if (s_serialLogged < 3) {
                 // Serial readback around the write: the single most decisive
@@ -1109,10 +970,6 @@ static void sweepStepRaw(void* src) {
             if (swapped) break;
         }
 
-        // Fallback: the section HAS block storage but every probe landed on
-        // air/unsafe names (cave floors, mixed sections). Swap through the
-        // air slot with a harvested non-air partner: a net-zero content
-        // change that still bumps the sub-chunk serial.
         if (!swapped && haveAir && sets < setBudget) {
             SDK::Block* partner = pickPartner(nullptr);
             if (partner) {
@@ -1126,10 +983,6 @@ static void sweepStepRaw(void* src) {
                 }
             }
         }
-        // Milestone for the adaptive write-path check: remember when the 32nd
-        // swap landed; ~2.5 s later Xray_StepRetextureSweep measures whether
-        // the builder produced section builds for them (and flips paths when
-        // it did not).
         if (swapped && !s_flipChecked && s_sweepSwapped >= 32) {
             s_flipChecked = true;
             s_flipCheckMs = GetTickCount64();
@@ -1138,9 +991,6 @@ static void sweepStepRaw(void* src) {
         if (!swapped) ++s_sweepFailed;
     }
 
-    // Sweep timeout: the cursor can spin without progress when every probe is
-    // air/unloaded (no swap partners) or every write is refused. Finish with a
-    // verdict instead of looping forever with the world half-vanilla.
     if (s_sweepStartMs && GetTickCount64() - s_sweepStartMs > kSweepTimeoutMs) {
         LOG_WARN("re-mesh sweep timed out after " +
                  std::to_string(kSweepTimeoutMs / 1000) + "s: probed " +
@@ -1163,9 +1013,6 @@ void Xray_StepRetextureSweep() {
         startRetextureSweepAt(req);
     }
 
-    // Delayed sweep verdict (+5 s after finish): section builds keep draining
-    // long after the last swap lands, so the finish-time builds delta alone
-    // cannot tell "no rebuilds" from "rebuilds still queued".
     if (s_verdictAtMs && GetTickCount64() >= s_verdictAtMs) {
         s_verdictAtMs = 0;
         const unsigned long long dB =
@@ -1180,9 +1027,6 @@ void Xray_StepRetextureSweep() {
                  ", hook blocks +" + std::to_string(dS) + " - " + verdict, "Xray");
     }
 
-    // Adaptive write-path check: 2.5 s after the 32nd swap, count what the
-    // builder actually produced; if it produced nothing, the PRIMARY path is
-    // not scheduling re-meshes on this session - flip once and re-sweep.
     if (s_flipCheckMs && !s_pathFlipped &&
         GetTickCount64() - s_flipCheckMs > 2500) {
         const unsigned long long built =
@@ -1212,9 +1056,6 @@ void Xray_StepRetextureSweep() {
     Vec3 pos;
     if (!readActorPos(lp, &pos)) { s_sweepActive = false; return; }
 
-    // Teleport / long movement mid-sweep: restart around the new position so
-    // the sweep always covers what is actually on screen. (startRetexture-
-    // SweepAt now forces the 24-chunk render-distance radius on its own.)
     const float dx = pos.x - s_sweepPx, dy = pos.y - s_sweepPy, dz = pos.z - s_sweepPz;
     if (dx * dx + dy * dy + dz * dz > 48.0f * 48.0f) {
         startRetextureSweepAt(0);
@@ -1228,9 +1069,6 @@ void Xray::resetScan(const SDK::BlockPos& center, int radius) {
     mCenter = center;
     mRadius = radius;
     mCursor = 0;
-    // Restart the in-progress pass, but keep the LAST completed set
-    // rendering until the new pass swaps in — clearing it here would blank
-    // every box for a few ticks on every recenter (movement/teleport).
     mScanBuffer.clear();
     mLegacyKindCache.clear();
 }
@@ -1239,9 +1077,6 @@ void Xray::OnEnable() {
     installTextureHook();
     g_keepMask.store(buildKeepMask(this), std::memory_order_relaxed);
     if (oTess || oResolver) { g_clsFlushPending.store(true, std::memory_order_relaxed); g_texRedirectOn.store(true, std::memory_order_relaxed); }
-    // Sweep write-path diagnostics: log exactly which invalidation mechanism
-    // is available on this build (a silent null here used to be the whole
-    // "only some tree turns transparent" failure).
     {
         ChunkSetBlockFn csb = resolveChunkSetBlock();
         SetBlockFn sb = resolveSetBlock();
@@ -1274,9 +1109,6 @@ void Xray::OnEnable() {
 }
 
 void Xray::OnDisable() {
-    // Instant at the lookup level: the next lookup answers with the real
-    // entries again. The sweep re-tessellates the already built chunks back
-    // to their real textures.
     g_texRedirectOn.store(false, std::memory_order_relaxed);
     Xray_StartRetextureSweep((int)static_cast<NumberSetting*>(mSettings[1])->mValue);
 
@@ -1289,10 +1121,6 @@ void Xray::OnDisable() {
 
 void Xray::OnTick() {
     if (!IsEnabled()) return;
-    // Ore toggles feed the redirect's keep-mask (read from the tessellation
-    // threads inside the hook) - rebuilt every tick so setting changes land
-    // immediately. A mask CHANGE restarts the re-mesh sweep so the already
-    // built world re-tessellates with the new ore selection as well.
     const uint32_t mask = buildKeepMask(this);
     g_keepMask.store(mask, std::memory_order_relaxed);
     s_sampling.store(debugEnabled(this), std::memory_order_relaxed);
@@ -1325,9 +1153,6 @@ void Xray::OnTick() {
     bool onlyExposed = static_cast<BoolSetting*>(mSettings[5])->mValue;
     int r2 = radius * radius;
 
-    // Progressive, double-buffered scan: matches accumulate in mScanBuffer
-    // (tick-thread only) and are swapped into mFoundBlocks only when the
-    // pass completes, so the render thread always sees a COMPLETE set.
     for (int i = 0; i < budget && total > 0; ++i) {
         if (mCursor == 0) mScanBuffer.clear();   // begin a fresh pass
         int cur = mCursor++;
@@ -1383,10 +1208,6 @@ void Xray::OnRender() {
     bool dbg = debugEnabled(this);
     if (SDK::ScreenView::currentScreenName() != "hud_screen") return;
 
-    // Darkness FIRST: this module is registered before every other overlay,
-    // so the plate lands UNDER the boxes of every module that draws later
-    // (ESP players, BlockESP, ...) — the world dims, the ores keep glowing.
-    // It is independent of the box overlay and draws with or without it.
     bool darkness = static_cast<BoolSetting*>(mSettings[6])->mValue;
     float darkA = static_cast<NumberSetting*>(mSettings[7])->mValue;
     if (darkA < 0.0f) darkA = 0.0f; if (darkA > 1.0f) darkA = 1.0f;
@@ -1432,9 +1253,6 @@ void Xray::OnRender() {
     // Cube topology comes from the shared BoxOverlay tables (same canonical
     // corner layout projectBlockBox emits).
 
-    // Draw cap: pathological worlds (deepslate everywhere, huge radius)
-    // can hold tens of thousands of matches; the far half of them is
-    // sub-pixel anyway. Keep the frame budget bounded.
     const size_t kDrawCap = 4096;
     size_t drawn = 0;
     for (const FoundBlock& fb : blocks) {

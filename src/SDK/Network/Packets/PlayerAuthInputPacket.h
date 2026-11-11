@@ -1,8 +1,4 @@
 #pragma once
-// PlayerAuthInputPacket (ID 0x90) — Bedrock 1.26.x, Packet base = 0x30.
-// Offsets re-verified against the 26.60 payload validator:
-// PlayerAuthInputPacketPayload::validate reads mRot+0x30..mInputData+0x88 at
-// exactly these offsets (see Validate::* strings).
 
 #include "../Packet.h"
 #include "../../Types.h"
@@ -80,12 +76,6 @@ inline AuthInputAction operator~(AuthInputAction a) {
 inline void operator|=(AuthInputAction& a, AuthInputAction b) { a = a | b; }
 inline void operator&=(AuthInputAction& a, AuthInputAction b) { a = a & b; }
 
-// Live packet view — do not construct; cast from the send-hook pointer only.
-// Layout (Packet base 0x30), offsets mirrored in the k* constants below:
-// mRot{pitch,yaw}@0x30, mPos@0x38, mYHeadRot@0x44, mPosDelta@0x48,
-// mVehicleRot@0x54, mAnalogMove@0x5C, mMove@0x64, mInteractRots{pitch,yaw}@0x6C,
-// mCamOrient@0x74, mRawMove@0x80, mInputData(u64)@0x88, input/play modes
-// @0x90/0x94, mInteractModel@0x98, mClientTick@0xA0.
 class PlayerAuthInputPacket : public Packet {
 public:
     static constexpr PacketID ID = PacketID::PlayerAuthInput;

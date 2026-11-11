@@ -1,33 +1,59 @@
-#include <libhat/Scanner.hpp>
+#include <libhat/scanner.hpp>
 
-#include <libhat/Defines.hpp>
-#include <libhat/System.hpp>
+#include <libhat/defines.hpp>
+#include <libhat/system.hpp>
 
 #ifdef LIBHAT_HINT_X86_64
 #include "arch/x86/Frequency.hpp"
 #endif
 
+#ifdef LIBHAT_HINT_AARCH64
+#include "arch/arm/Frequency.hpp"
+#endif
+
 namespace hat::detail {
+
+    static constexpr std::uint16_t NUM_PAIRS = 512;
+
+    using pair_hint_t = std::tuple<
+        const std::array<std::pair<std::byte, std::byte>, NUM_PAIRS>&,
+        const std::array<std::uint16_t, NUM_PAIRS>&
+    >;
+
+    static constexpr auto get_pair_hint(const scan_hint hints) -> std::optional<pair_hint_t> {
+#ifdef LIBHAT_HINT_X86_64
+        if (static_cast<bool>(hints & scan_hint::x86_64)) {
+            return std::tie(hat::detail::x86_64::pairs_x1, hat::detail::x86_64::scores_x1);
+        }
+#endif
+#ifdef LIBHAT_HINT_AARCH64
+        if (static_cast<bool>(hints & scan_hint::aarch64)) {
+            return std::tie(hat::detail::aarch64::pairs_x1, hat::detail::aarch64::scores_x1);
+        }
+#endif
+        return std::nullopt;
+    }
 
     void scan_context::apply_hints(const scanner_context& scanner) {
         const bool pair0 = static_cast<bool>(this->hints & scan_hint::pair0);
 
-#ifdef LIBHAT_HINT_X86_64
-        const bool x86_64 = static_cast<bool>(this->hints & scan_hint::x86_64);
-        if (x86_64 && !pair0 && scanner.vectorSize && this->alignment == hat::scan_alignment::X1) {
-            static constexpr auto getScore = [](const std::byte a, const std::byte b) {
-                constexpr auto& pairs = hat::detail::x86_64::pairs_x1;
-                const auto it = std::ranges::find(pairs, std::pair{a, b});
-                return static_cast<size_t>(it - pairs.begin());
+        const auto pair_hint = get_pair_hint(this->hints);
+        if (pair_hint && !pair0 && scanner.vectorSize) {
+            const auto getScore = [&](const std::byte a, const std::byte b) -> std::uint16_t {
+                const auto& [pairs, scores] = *pair_hint;
+                const std::pair pair{a, b};
+                const auto it = std::ranges::lower_bound(pairs, pair);
+                const auto index = static_cast<std::uint16_t>(it - pairs.begin());
+                return it != pairs.end() && *it == pair ? scores[index] : NUM_PAIRS;
             };
 
-            std::optional<std::pair<size_t, size_t>> bestPair{};
+            std::optional<std::pair<std::size_t, std::uint16_t>> bestPair{};
             for (auto it = this->signature.begin(); it != std::prev(this->signature.end()); it++) {
-                const auto i = static_cast<size_t>(it - this->signature.begin());
+                const auto i = static_cast<std::size_t>(it - this->signature.begin());
                 auto& a = *it;
                 auto& b = *std::next(it);
 
-                if (a.has_value() && b.has_value()) {
+                if (a.all() && b.all()) {
                     const auto score = getScore(a.value(), b.value());
                     if (!bestPair || score > bestPair->second) {
                         bestPair.emplace(i, score);
@@ -39,16 +65,15 @@ namespace hat::detail {
                 this->pairIndex = bestPair->first;
             }
         }
-#endif
 
         // If no "optimal" pair was found, find the first byte pair in the signature
-        if (!this->pairIndex.has_value() && this->alignment == hat::scan_alignment::X1) {
+        if (!this->pairIndex.has_value()) {
             for (auto it = this->signature.begin(); it != std::prev(this->signature.end()); it++) {
-                const auto i = static_cast<size_t>(it - this->signature.begin());
+                const auto i = static_cast<std::size_t>(it - this->signature.begin());
                 auto& a = *it;
                 auto& b = *std::next(it);
 
-                if (a.has_value() && b.has_value()) {
+                if (a.all() && b.all()) {
                     this->pairIndex = i;
                     break;
                 }
@@ -59,30 +84,34 @@ namespace hat::detail {
         }
     }
 
-    void scan_context::auto_resolve_scanner() {
-#if defined(LIBHAT_X86) || defined(LIBHAT_X86_64)
+    template<>
+    scan_function_t resolve_scanner<scan_mode::Auto>(scan_context& context) {
         const auto& ext = get_system().extensions;
-        if (ext.bmi) {
-#if defined(LIBHAT_X86_64) && !defined(LIBHAT_DISABLE_AVX512)
-            if (ext.avx512f && ext.avx512bw) {
-                this->scanner = resolve_scanner<scan_mode::AVX512>(*this);
-                return;
+#if defined(LIBHAT_X86) || defined(LIBHAT_X86_64)
+        if (compiled_extensions.bmi || ext.bmi) {
+#if defined(LIBHAT_X86_64) && defined(LIBHAT_FEATURE_AVX512)
+            if ((compiled_extensions.avx512f || ext.avx512f)
+                && (compiled_extensions.avx512bw || ext.avx512bw)) {
+                return resolve_scanner<scan_mode::AVX512>(context);
             }
 #endif
-            if (ext.avx2) {
-                this->scanner = resolve_scanner<scan_mode::AVX2>(*this);
-                return;
+            if (compiled_extensions.avx2 || ext.avx2) {
+                return resolve_scanner<scan_mode::AVX2>(context);
             }
         }
-#if !defined(LIBHAT_DISABLE_SSE)
-        if (ext.sse41) {
-            this->scanner = resolve_scanner<scan_mode::SSE>(*this);
-            return;
+#if defined(LIBHAT_FEATURE_SSE)
+        if (compiled_extensions.sse41 || ext.sse41) {
+            return resolve_scanner<scan_mode::SSE>(context);
         }
 #endif
+#endif
+#if defined(LIBHAT_ARM) || defined(LIBHAT_AARCH64)
+        if (compiled_extensions.neon || ext.neon) {
+            return resolve_scanner<scan_mode::Neon>(context);
+        }
 #endif
         // If none of the vectorized implementations are available/supported, then fallback to scanning per-byte
-        this->scanner = resolve_scanner<scan_mode::Single>(*this);
+        return resolve_scanner<scan_mode::Single>(context);
     }
 }
 

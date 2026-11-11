@@ -9,9 +9,6 @@
 #include <string>
 #include <vector>
 
-// Baritone — goal-directed pathfinding walker built on the movement-typed
-// A* (Pathfinder), the analog-input PathExecutor and the SilentRotation
-// channel, mirroring the Baritone-bedrock reference client.
 class Baritone : public Module {
 public:
     Baritone();
@@ -23,9 +20,6 @@ public:
     void OnRender() override;
     void UpdateSettingsVisibility() override;
 
-    // Movement restated in the spoofed travel frame, consumed by the
-    // PlayerAuthInput send hook. Pure forward: that IS the world-space
-    // motion the client is about to produce, in the facing we report.
     static bool ConsumeSilentMove(float& forward, float& strafe);
 
     // Chat-command entry points (called from GotoCommand).

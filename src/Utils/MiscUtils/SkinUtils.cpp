@@ -11,10 +11,6 @@
 
 namespace {
 
-// ---- PNG / zlib primitives ------------------------------------------------
-// Self-contained encoder. We avoid pulling in stb_image_write (absent here)
-// and keep it tiny: zlib "stored" blocks (no compression) are perfectly valid
-// and a 64x64 skin is only ~16 KB, so file size is a non-issue.
 
 uint32_t crc32_of(const unsigned char* data, size_t len, uint32_t crc = 0xFFFFFFFFu) {
     static uint32_t table[256];
@@ -89,20 +85,11 @@ void flushRetiredTextures() {
 }
 
 bool imageValid(const SDK::mce::Image& img) {
-    // Validate by BYTE SIZE, not by the format enum. Bedrock skin images carry
-    // 4-byte RGBA pixels but the `format` field is not reliably RGBA8Unorm on
-    // player-list skins (Latite's own head cache ignores it and only checks
-    // width*height*4 <= byteCount). Requiring RGBA8Unorm here rejected every
-    // valid remote-player skin, leaving the TabList head column blank.
     if (img.mWidth == 0 || img.mHeight == 0) return false;
     if (img.mWidth > 4096 || img.mHeight > 4096) return false;
     const unsigned char* bytes = img.mImageBytes.data();
     size_t need = (size_t)img.mWidth * img.mHeight * 4u;
     if (bytes == nullptr || img.mImageBytes.size() < need) return false;
-    // The vector HEADER lives in probed struct memory, but the heap buffer it
-    // points at can still be stale/freed (player left, skin streamed out
-    // mid-frame) — probe the actual bytes before the decode reads them. That
-    // stale-buffer read was the intermittent TabList crash on tab press.
     return sdk_safe_ptr((void*)bytes, need);
 }
 

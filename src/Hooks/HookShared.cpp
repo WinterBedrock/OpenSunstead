@@ -1,38 +1,9 @@
 #include "HookShared.h"
-#include "../Core/Logger.h"
 #include <string>
 
 namespace gh {
 namespace {
-    bool s_batchActive = false;
-    int  s_batchQueued = 0;
     std::atomic<bool> s_hooksReady{ false };
-}
-
-MH_STATUS HookEnable(LPVOID target) {
-    if (s_batchActive) {
-        ++s_batchQueued;
-        return MH_OK;
-    }
-    return MH_EnableHook(target);
-}
-
-void BeginHookBatch() { s_batchActive = true; }
-
-int FlushHookBatch() {
-    s_batchActive = false;
-    const int queued = s_batchQueued;
-    s_batchQueued = 0;
-    if (queued <= 0) return 0;
-    const MH_STATUS s = MH_EnableHook(MH_ALL_HOOKS);
-    if (s != MH_OK) {
-        LOG_ERROR("Batch enable failed (MH_EnableHook=" + std::to_string((int)s) +
-                  ") — some hooks are NOT live", "GameHooks");
-        return -1;
-    }
-    LOG_INFO("Batch-enabled " + std::to_string(queued) +
-             " hooks in one thread freeze", "GameHooks");
-    return queued;
 }
 
 bool HooksInstalled() { return s_hooksReady.load(std::memory_order_acquire); }

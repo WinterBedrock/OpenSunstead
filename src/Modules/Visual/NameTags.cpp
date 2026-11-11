@@ -31,13 +31,7 @@ namespace {
 // worldToScreen is consolidated in SDK/Math.h (global, resolved via ADL).
 // Camera MVP/origin acquisition is shared via acquireCameraMVP (FrameView.h).
 
-// SEH-isolated reads. The __try frames below must not create any C++ objects
-// with non-trivial destructors, or MSVC raises C2712.
-// pos + bounding box in one guarded read: SDK::sehGetPosBox (GameContext.h).
 
-// No __try: getRawName() is already SEH-guarded via actor_vtable_getname_seh,
-// and the temporary std::string it returns cannot live inside a __try frame.
-// Name + health reads are SDK::sehGetName / SDK::sehGetHealth (GameContext.h).
 
 // Per-actor horizontal speed (blocks/sec), low-pass filtered for a steady read.
 static float computeBps(SDK::Actor* a, const Vec3& pos) {
@@ -64,17 +58,20 @@ static bool ntIsSneaking(SDK::Actor* a) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Latite-proven actor skin path (same as TabList/TargetHUD). Player+0xAB0 ->
-// SerializedSkinRef -> wrapper+0xA0 = SkinImage. Avoids g_Actor_mSerializedSkin.
+// Latite-proven actor skin path (same as TabList/TargetHUD), 1.26.62:
+// Player+0xAD8 -> SerializedSkinRef -> skinImpl=*ref -> SkinImage @ +0x80.
 SDK::mce::Image* sehImageFromActor(SDK::Actor* actor) {
     if (!actor) return nullptr;
     __try {
-        if (!sdk_safe_ptr(actor, 0xAB0 + sizeof(void*))) return nullptr;
-        uintptr_t ref = *reinterpret_cast<uintptr_t*>((uintptr_t)actor + 0xAB0);
+        constexpr uintptr_t kSkinRef = ::Layout::Actor::SerializedSkinRef;  // 0xAD8
+        if (!sdk_safe_ptr(actor, kSkinRef + sizeof(void*))) return nullptr;
+        uintptr_t ref = *reinterpret_cast<uintptr_t*>((uintptr_t)actor + kSkinRef);
         if (!ref || !sdk_safe_ptr((void*)ref, sizeof(void*))) return nullptr;
-        uintptr_t wrapper = *reinterpret_cast<uintptr_t*>(ref);
-        if (!wrapper || !sdk_safe_ptr((void*)wrapper, 0xA0 + sizeof(void*))) return nullptr;
-        return reinterpret_cast<SDK::mce::Image*>(wrapper + 0xA0);
+        uintptr_t skinImpl = *reinterpret_cast<uintptr_t*>(ref);
+        if (!skinImpl) return nullptr;
+        constexpr uintptr_t kSkinImage = ::Layout::Actor::SkinImageInRef;   // 0x80
+        if (!sdk_safe_ptr((void*)skinImpl, kSkinImage + sizeof(SDK::mce::Image))) return nullptr;
+        return reinterpret_cast<SDK::mce::Image*>(skinImpl + kSkinImage);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
@@ -90,20 +87,10 @@ std::vector<unsigned char> sehHeadRGBA(SDK::Actor* actor, int outSize) {
 
 static int g_ntFrame = 0;
 
-// --- Selective vanilla-tag suppression -------------------------------------
-// Actors the overlay drew a custom label for THIS ImGui frame. The
-// renderNametag detour (GameHooks) skips the vanilla tag for exactly these
-// actors instead of zeroing the whole batch, so untagged mobs and players
-// keep their regular floating nick.
 static std::mutex g_tagMutex;
 static std::unordered_set<void*> g_tagActors;
 
 bool NameTags::ShouldHideActor(void* actor, bool* fallbackAll) {
-    // fallbackAll is deliberately unused now: the hide decision is stable
-    // frame-to-frame (see the double-buffered swap in OnRender), so there is
-    // no "overlay drew nothing this frame" window that would need a
-    // hide-everything fallback. The old fallback is what hid ALL nametags
-    // whenever the overlay skipped a frame.
     if (fallbackAll) *fallbackAll = false;
     Module* m = ModuleManager::GetInstance().GetModuleByName("NameTags");
     if (!m || !m->IsEnabled()) return false;
@@ -122,9 +109,6 @@ bool NameTags::ShouldHideOriginal() {
     return static_cast<BoolSetting*>(m->mSettings[17])->mValue;
 }
 
-// SRVs queued for Release AFTER ImGui has finished the current frame's Present
-// (see flushDeferredHeadReleases). Mid-frame Release of textures still referenced
-// by ImDrawList commands freezes the overlay permanently.
 static std::vector<void*> g_deferredHeadSrv;
 
 static void deferHeadRelease(void* srv) {
@@ -168,9 +152,6 @@ void NameTags::OnRender() {
     SDK::ClientInstance* ci = nullptr; SDK::Level* level = nullptr; SDK::Actor* lp = nullptr;
     if (!SDK::resolveContext(&ci, &level, &lp)) { if (dbg) LOG_WARN("resolveContext failed", "NameTags"); return; }
 
-    // Camera MVP + origin via the shared Present-time acquisition (live
-    // GameRenderer matrices, snapshot fallback, zoom scale) — same projection
-    // ESP/Tracers use, so tags and boxes never disagree.
     float mvp[16];
     Vec3 origin(0, 0, 0);
     if (!acquireCameraMVP(ci, mvp, origin)) return;
@@ -183,12 +164,6 @@ void NameTags::OnRender() {
     int frame = ImGui::GetFrameCount();
     if (s_drawnFrame == frame) return;
     s_drawnFrame = frame;
-    // DOUBLE-BUFFERED tag set: the frame's actor set is built locally and
-    // swapped in only when COMPLETE. The game's nametag pass runs on its own
-    // cadence and used to read the set mid-rebuild (empty -> the old
-    // hide-all fallback fired) or on frames the overlay skipped - that
-    // alternation was the rapid visible/not-visible flicker. The last
-    // COMPLETE frame's set now stays valid until the next one replaces it.
 
     std::vector<SDK::Actor*> actors;
     if (!sehGetActorList(level, &actors)) return;
@@ -237,26 +212,15 @@ void NameTags::OnRender() {
         if (isLocal && !renderLocal) continue;
         bool player = sehIsPlayer(actor);
         if (!player && !(showEntities && sdk_safe_ptr(actor, 0x230))) continue;
-        // NOTE: a previous skin-validity gate (checking getSkin()->mId/mSkinImage)
-        // silently filtered EVERY player on this build because the skin offsets
-        // were wrong -> no names rendered. Names must show regardless of skin
-        // load state, so the gate is gone (labels are cheap + skin-independent).
 
         Vec3 pos; AABB bb;
         if (!SDK::sehGetPosBox(actor, &pos, &bb)) continue;
         Vec3 head;
         {
-            // Anchor just above the model top, centred, rebased onto the
-            // interpolated render position — the SAME path for the local
-            // player and everyone else. The old fixed self offset rode the
-            // third-person render position and floated the tag far too high.
             Vec3 dim = bb.higher - bb.lower;
             if (!(dim.y > 0.1f && dim.y < 6.0f)) dim = Vec3(0.6f, 1.8f, 0.6f);
             float topY = bb.higher.y;
             if (!(topY > pos.y) || topY > pos.y + 6.0f) topY = pos.y + dim.y;
-            // Sneak: the synced AABB can lag behind the crouch — clamp the
-            // anchor down to the crouched height so the tag DROPS with the
-            // head instead of riding up at the standing height.
             if (ntIsSneaking(actor)) {
                 const float boxH = topY - bb.lower.y;
                 if (boxH > 1.55f) topY = bb.lower.y + 1.42f;
@@ -274,19 +238,12 @@ void NameTags::OnRender() {
         // ---- Build the label text ----
         std::string rawName;
         if (!SDK::sehGetName(actor, &rawName) || rawName.empty()) rawName = player ? "Player" : "Entity";
-        // The DRAWN name: your own tag carries the custom self name (plus the
-        // real nick in brackets when enabled). The head texture still keys on
-        // the REAL name below — the skin belongs to the real player.
         std::string drawName = rawName;
         if (isLocal && customSelf && !selfName.empty()) {
             drawName = selfName;
             if (showRealSelf) drawName += " (" + rawName + ")";
         }
 
-        // Stats (HP / BPS) as WHOLE numbers. Each stat is its own segment so
-        // the GRAY separators between them (and between the name and the
-        // first stat) never take the HP/BPS colour: "Name - 18 - 5" with the
-        // dashes gray, the numbers in the stat colour.
         std::string hpText, bpsText;
         {
             if (showHealth) {
@@ -317,9 +274,6 @@ void NameTags::OnRender() {
         }
         if (fontSize < 1.0f) fontSize = 1.0f;
 
-        // ---- Color ----
-        // The nick is WHITE (theme mode) or the custom color - never a dark
-        // theme shade; the stats suffix carries the theme accent color.
         ImColor nameCol, statCol;
         if (colMode == 0) {
             nameCol = ImColor(255, 255, 255, 255);
@@ -412,10 +366,6 @@ void NameTags::OnRender() {
         ImVec2 textPos(cursorX, midY - textH * 0.5f);
         bool textShadow = (!doBg && doShadow);
         ImRenderUtils::drawText(textPos, drawName, nameCol, fontSize, 1.0f, textShadow, dl);
-        // Segmented stats: gray separator between the name and the first
-        // stat and between the stats themselves; the stat values keep the
-        // stat colour. (One fused string made the separators inherit the
-        // HP/BPS colour and left no gap after the nick.)
         {
             const ImColor sepCol(150, 150, 150, 230);
             float sx = cursorX + nameW;
@@ -443,9 +393,6 @@ void NameTags::OnRender() {
         ++drawn;
     }
 
-    // Swap the COMPLETED frame set in atomically. The game's nametag pass
-    // keeps seeing the previous complete set until this moment - never a
-    // half-built or empty one.
     { std::lock_guard<std::mutex> lock(g_tagMutex); g_tagActors.swap(frameTags); }
 
     // Defer release of head textures for players no longer visible this frame.

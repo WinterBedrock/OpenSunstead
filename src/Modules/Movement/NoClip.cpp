@@ -5,25 +5,12 @@
 #include <cmath>
 #include <Windows.h>
 
-// NoClip, v6 — see the header for why the spectator approach was dropped.
-//
-// Ported from the working reference implementation (Boost): collapse the AABB
-// to zero height so the collision resolver stops ejecting us, then translate
-// the box ourselves every tick from the look yaw + movement keys.
-//
-// Everything the game owns is written through SEH-guarded helpers. A bad
-// pointer here degrades to "module does nothing", never to a crash — the same
-// contract the rest of the SDK already holds.
 
 static constexpr float kPi = 3.141592653589793f;
 static constexpr float kVanillaHeight = 1.8f;
 
 namespace {
 
-// ---- SEH-guarded writers -------------------------------------------------
-// Each touches one component the game also touches. A fault means the component
-// was absent or the layout drifted, which is an expected outcome mid-world-load
-// or during a dimension change — not a crash.
 
 // Flatten the box: upper.y = lower.y. A zero-height box has no vertical extent,
 // so the horizontal-collision pass finds nothing to resolve against.
@@ -50,10 +37,6 @@ bool sehRestoreHeight(SDK::Actor* lp, float height) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Translate the live AABB by `delta` and apply the same delta to the
-// StateVector, so the game's position/interpolation matches our write.
-// Returns the delta actually applied (zero on failure), so the caller can
-// chain the lerp.
 bool sehApplyMove(SDK::Actor* lp, const Vec3& delta) {
     if (!lp) return false;
     __try {
@@ -133,19 +116,11 @@ void NoClip::OnTick() {
     // a movement-tick, and once it is tall again the walls catch us.
     if (!sehCollapseHeight(lp, nullptr)) return;
 
-    // Input inactive (chat open, window unfocused, menu): kill the residual
-    // velocity instead of returning with it still set. The last tick's write
-    // (e.g. +VSpeed while SPACE was held) otherwise keeps being integrated by
-    // the game's motion system and the player slowly floats UP while typing -
-    // the "glide pulls me into the air" effect.
     if (!sdkIsGameFocused() || !SDK::isGameplayInputActive()) {
         sehHover(lp, 0.f);
         return;
     }
 
-    // ---- Build the world-space movement vector (Boost convention) --------
-    // Forward is where the player LOOKS (yaw only — pitch would dive into the
-    // floor). Strafe is 90 degrees off, same sign as the game's own input map.
     const bool w = (GetAsyncKeyState('W') & 0x8000) != 0;
     const bool a = (GetAsyncKeyState('A') & 0x8000) != 0;
     const bool s = (GetAsyncKeyState('S') & 0x8000) != 0;

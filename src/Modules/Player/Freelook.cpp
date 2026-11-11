@@ -22,11 +22,6 @@ void Freelook::OnTick() {
     bool inGame = SDK::isGameplayInputActive();
 
     if (bt == 1) {
-        // HOLD: ModuleManager::PollHoldBinds force-enables the module while the
-        // key is physically held (even when it is toggled off) and force-
-        // disables it on release, so IsEnabled() ALREADY carries the whole key
-        // state — and a manual ClickGUI enable counts too: toggling the module
-        // on from the menu must engage the free camera, not just the key.
         mHoldMode = true;
         mActive = IsEnabled() && inGame;
         mPrevKey = mHoldKeyDown;

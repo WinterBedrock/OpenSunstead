@@ -43,10 +43,6 @@ std::string narrow(const std::wstring& w) {
     return s;
 }
 
-// GET with redirect following (SoundCloud stream/artwork URLs are 302s to a
-// CDN). depth guards against redirect loops. `headers` (optional extra
-// request headers, e.g. Authorization) is sent ONLY on the first hop — never
-// forwarded across a redirect, so a user OAuth token can never leak to a CDN.
 HttpResp httpGetDepth(const std::string& url, size_t capBytes, int depth,
                       const std::wstring& headers = {}) {
     HttpResp res;
@@ -144,10 +140,6 @@ std::string getStr(const nlohmann::json& j, const char* key) {
     return {};
 }
 
-// Duration cap for non-search picks (see resolveTrackJson): a "random charts"
-// pick can be a 1-2 hour mix that downloads for minutes, so skip anything
-// longer than this — unless the pick came from searchFirst, which sets the
-// flag below for the duration of its own resolve pass.
 static constexpr long long kMaxTrackMs = 8LL * 60LL * 1000LL; // 8 minutes
 static bool g_allowLong = false;
 
@@ -158,10 +150,6 @@ bool resolveTrackJson(const nlohmann::json& t, const std::string& clientId, Trac
     if (t.contains("streamable") && t["streamable"].is_boolean() &&
         !t["streamable"].get<bool>())
         return false;
-    // Duration cap: a "random charts" pick can be a 1-2 hour mix, which
-    // downloads for minutes and monopolises the widget. Skip anything longer
-    // than kMaxTrackMs unless the user explicitly searched for it
-    // (allowLong = searchFirst's contract).
     long long dur = 0;
     try { dur = t.value("duration", 0LL); } catch (...) { dur = 0; }
     if (dur > kMaxTrackMs && !g_allowLong) return false;
@@ -235,9 +223,6 @@ bool resolveRandomOrder(const std::vector<nlohmann::json>& items,
     return false;
 }
 
-// Pull track JSON objects out of an api-v2 listing body. Both bare track
-// objects (search/related) and wrappers ({track:{...}} — charts, likes) are
-// unwrapped into the same flat list resolveRandomOrder() consumes.
 void collectTracks(const nlohmann::json& j, std::vector<nlohmann::json>& items) {
     if (!j.is_object() || !j.contains("collection") || !j["collection"].is_array()) return;
     for (const auto& e : j["collection"]) {
@@ -338,9 +323,6 @@ Result chartsRandom(const std::string& clientId) {
     // Auto-pick path (autoplay): keep the duration cap on.
     g_allowLong = false;
 
-    // Charts = the trending feed (baseline pick when nothing personal exists
-    // yet). Verified live 2026-10: kind=top is GONE (400), the working form is
-    // kind=trending + genre=soundcloud%3Agenres%3Aall-music.
     const std::string url = "https://api-v2.soundcloud.com/charts?kind=trending"
         "&genre=soundcloud%3Agenres%3Aall-music"
         "&client_id=" + urlEncode(clientId) + "&limit=50";
@@ -542,9 +524,6 @@ Result userLikesRandom(const std::string& clientId, long long userId) {
     if (userId <= 0) { r.error = "no profile resolved (.player user <link>)"; return r; }
     g_allowLong = false;
 
-    // Verified against live api-v2 (2026-10): the listing endpoint is
-    // /users/{id}/likes (NOT /likes/tracks, which 404s) — its items are
-    // like-objects {created_at, kind, track|playlist}.
     const std::string url = "https://api-v2.soundcloud.com/users/" +
         std::to_string(userId) + "/likes?client_id=" + urlEncode(clientId) + "&limit=48";
     HttpResp resp = httpGet(url, 768 * 1024);

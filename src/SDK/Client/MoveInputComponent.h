@@ -5,9 +5,6 @@
 
 namespace SDK {
 
-// 1.26.50.04 layout, verified against ClientInputUpdateSystem::tick
-// (sub_146697260) and the entt pool stride (100 bytes, getOrEmplace
-// sub_14267A330). Bit positions match the game's own rebuild loop.
 struct MoveInputState {
     bool sneakDown : 1;                // 0
     bool sneakToggleDown : 1;          // 1

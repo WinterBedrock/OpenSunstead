@@ -2,10 +2,6 @@
 #include "../Module.h"
 #include <vector>
 
-// ClickEffect: spawns small animated circles at the cursor position on every
-// mouse click. Renders on all ScreenViews EXCEPT the in-game HUD (hud_screen),
-// so it shows up in menus / inventory / clickgui etc. Fully configurable
-// (count, size, lifetime, colors, opacity randomness).
 class ClickEffect : public Module {
 public:
     ClickEffect();
@@ -13,14 +9,14 @@ public:
 
 private:
     struct Particle {
-        float x, y;          // screen position
-        float vx, vy;        // velocity (px/sec)
-        float radius;        // base radius
-        float born;          // spawn time (seconds)
-        float life;          // lifetime (seconds)
-        float r, g, b;       // color 0..1
-        float baseAlpha;     // starting alpha
-        bool  filled;        // filled or ring
+        float x, y;
+        float vx, vy;
+        float radius;
+        float born;
+        float life;
+        float r, g, b;
+        float baseAlpha;
+        bool  filled;
     };
 
     std::vector<Particle> particles;

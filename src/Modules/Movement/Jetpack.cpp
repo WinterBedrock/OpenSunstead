@@ -10,12 +10,6 @@ void Jetpack::OnTick() {
     int bindType = static_cast<EnumSetting*>(mSettings[3])->mValue;
 
     if (bindType == 1) { // Hold
-        // ModuleManager::PollHoldBinds force-enables us while the keybind is
-        // physically held (even when the module is toggled off) and force-
-        // disables it on release, so IsEnabled() ALREADY carries the whole
-        // key state — and a manual ClickGUI enable counts too: toggling the
-        // module on from the menu must fly, not just the key. No
-        // self-enable here: that is what used to pin the module "on".
         mHoldMode = true;
         if (!IsEnabled()) return;
     } else {
@@ -39,11 +33,6 @@ void Jetpack::OnTick() {
     float calcPitch = rot.x * -(PI / 180.0f);
 
     if (static_cast<BoolSetting*>(mSettings[4])->mValue) {
-        // BYPASS: glide-band flight. Vertical velocity is FORCED into the
-        // vanilla-elytra drift band (-0.08..-0.01 per tick) regardless of look
-        // pitch — servers flag rocket-class upward velocity, but accept
-        // glide-class downward drift everywhere. Horizontal speed is clamped
-        // low. The look direction only steers the horizontal component.
         float hSpeed = static_cast<NumberSetting*>(mSettings[0])->mValue;
         if (hSpeed > 1.2f) hSpeed = 1.2f;
         float glide = static_cast<NumberSetting*>(mSettings[5])->mValue;

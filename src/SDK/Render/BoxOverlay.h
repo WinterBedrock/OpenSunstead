@@ -1,9 +1,4 @@
 #pragma once
-// SDK box-overlay primitives: canonical cube corner layout (bottom ring 0..3,
-// top ring 4..7), face/edge index tables, corner and rect projection,
-// convex-hull silhouette, face/edge drawing — pure geometry over an explicit
-// (mn, mx) box. Policy (degenerate-box rejection, clamping, colors, thickness)
-// stays with the caller.
 #include "../Types.h"
 #include <imgui.h>
 
@@ -35,9 +30,6 @@ inline void cubeCorners(const Vec3& mn, const Vec3& mx, Vec3 out[8]) {
     out[6] = Vec3(mx.x, mx.y, mx.z); out[7] = Vec3(mn.x, mx.y, mx.z);
 }
 
-// Project all 8 corners. A corner behind the near plane is skipped
-// (valid[i] = false) instead of rejecting the whole box, so close boxes keep
-// their visible part. Returns the number of projectable corners.
 inline int projectBoxCorners(const Vec3& mn, const Vec3& mx, const float* mvp,
                               const Vec3& origin, const ImVec2& screen,
                               ImVec2 pts[8], bool valid[8]) {
@@ -51,9 +43,6 @@ inline int projectBoxCorners(const Vec3& mn, const Vec3& mx, const float* mvp,
     return vis;
 }
 
-// Screen-space bounding rect of the projected box. Raw min/max (no clamping,
-// no degenerate policy — the caller applies its own). Returns the number of
-// projectable corners; tl/br untouched when it is 0.
 inline int projectBoxRect(const Vec3& mn, const Vec3& mx, const float* mvp,
                            const Vec3& origin, const ImVec2& screen,
                            ImVec2* tl, ImVec2* br) {
@@ -74,9 +63,6 @@ inline int projectBoxRect(const Vec3& mn, const Vec3& mx, const float* mvp,
     return vis;
 }
 
-// Convex hull (Andrew's monotone chain, collinear points dropped) of up to 8
-// projected points: the box silhouette. hull must hold 8+ points; returns
-// the ordered-loop count (no duplicate end point).
 inline int convexHull2D(const ImVec2* in, int n, ImVec2* hull) {
     if (n < 3) { for (int i = 0; i < n; ++i) hull[i] = in[i]; return n; }
     ImVec2 pts[8];

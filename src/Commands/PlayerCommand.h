@@ -7,19 +7,6 @@
 #include <vector>
 #include <cstdlib>
 
-// .player — SoundCloud now-playing widget control.
-//
-//   .player key <client_id>   store the api-v2 client_id (persisted setting)
-//   .player play <query...>   search + resolve + play the first playable hit
-//   .player user <link|name>  your SoundCloud profile: the wave then plays
-//                             YOUR public likes (no login needed)
-//   .player random|wave|next  the recommendation wave: your likes (when a
-//                             profile is set) + the related-track chain
-//   .player prev|back         step back through the play history
-//   .player stop              stop playback and clear the widget
-//   .player pause             toggle pause/resume
-//   .player volume <0-100>    playback volume
-//   .player status            what is loaded / playing
 class PlayerCommand : public Command {
 public:
     PlayerCommand() : Command("player", "SoundCloud player (.player key|play|user|wave|stop|pause|volume|status)",

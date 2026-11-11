@@ -16,9 +16,6 @@
 // queue is tiny but it is still shared, so every access takes this lock.
 static std::mutex s_velQueueMx;
 
-// Reads the packet's REAL id from its own vtable (getId is vtable index 1),
-// instead of trusting the receive-hook's deduped handler->id map, which can
-// mislabel packets that share a dispatcher handler.
 static int ReadPacketId(SDK::Packet* packet) {
     if (!packet || !SDK::isSafeReadPtr(packet, sizeof(void*))) return -1;
     void** vtable = *reinterpret_cast<void***>(packet);
@@ -46,11 +43,6 @@ void Velocity::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel) 
 
     uint64_t lpRuntimeId = lp->getRuntimeID();
     const bool dbgVel = mSettings.size() > 12 && static_cast<BoolSetting*>(mSettings[12])->mValue;
-    // A zero runtime id means BOTH readers failed (the game accessor sig
-    // missed AND the entt walk is broken on this build). Dropping the packet
-    // check in that case still gives a working Cancel mode (a locally
-    // dropped SetEntityMotion for ANOTHER entity self-corrects on its next
-    // absolute-position packet) instead of a dead module.
     static bool s_warnedNoId = false;
     if (lpRuntimeId == 0) {
         if (!s_warnedNoId) {
@@ -101,9 +93,6 @@ void Velocity::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel) 
             mPending.push_back(kb);
             return;
         }
-        // Queue: every knockback that lands while one is held is REMEMBERED
-        // and applied after its own delay (capped — a lag spike should not
-        // build an unbounded backlog).
         if (mPending.size() < 8) mPending.push_back(kb);
         return;
     }
@@ -145,9 +134,6 @@ void Velocity::OnTick() {
         if (now >= kb.dueMs) { due = true; break; }
     if (!due) return;
 
-    // Apply every due knockback to the local motion (the exact thing the
-    // cancelled SetEntityMotion packet would have done). Sequential mode
-    // applies only the FRONT one — the rest wait their turn below.
     const bool sequential = mSettings.size() > 14 &&
                             static_cast<BoolSetting*>(mSettings[14])->mValue;
     SDK::ClientInstance* cInst = SDK::ClientInstance::get();
@@ -190,13 +176,6 @@ void Velocity::OnDisable() {
     mPending.clear();
 }
 
-// The delay readout: a plate above the hotbar area showing the queued
-// knockback and a themed slider bar shrinking to zero as the delay elapses.
-// The bar is drawn TargetHUD-style: theme gradient fill, a glossy 3D shading
-// pass, an accent glow spilling out of the bar and a bright leading cap, on
-// top of a blurred, lightly dimmed, rounded plate — all of it driven by the
-// module's own settings (Scale / Blur / Dim / Rounding / Bar Height / Bar
-// Glow / 3D Bar).
 void Velocity::OnRender() {
     if (mPending.empty()) return;
     if (static_cast<EnumSetting*>(mSettings[0])->mValue != 2) return;
@@ -232,17 +211,10 @@ void Velocity::OnRender() {
     const ImVec4 plate(x, y, x + w, y + h);
     const float  pad = 10.0f * scale;
 
-    // ---- Backdrop blur ----------------------------------------------------
-    // A D2D blur callback paints an OPAQUE blurred rect onto the backbuffer
-    // at replay time, so it must land BEFORE (and on an earlier list than)
-    // everything drawn here — same contract as TargetHUD's backdrop.
     if (blurAmt > 0.05f) {
         bool guiOpen = false;
         if (Module* gui = ModuleManager::GetInstance().GetModuleByName("ClickGUI"))
             guiOpen = gui->IsEnabled();
-        // The setting is 0..1 but D2D::addBlurOptimized takes a PIXEL-radius
-        // strength (ChestAura passes 4.0) — scale it into the same range, the
-        // previous 0.35 straight pass was sub-pixel and therefore invisible.
         if (!guiOpen)
             D2D::addBlurOptimized(ImGui::GetBackgroundDrawList(), 12.0f * blurAmt,
                                   std::optional<ImVec4>(plate), rounding);
@@ -298,9 +270,6 @@ void Velocity::OnRender() {
         ImRenderUtils::fillGradientRounded(dl, fill, c0, c1,
                                            barH * 0.5f, 0, /*vertical=*/false);
 
-        // 3D volume pass (TargetHUD's shaded-cylinder look): a lit top fading
-        // out, a dark bottom fading in, and a crisp glossy line — the bar
-        // reads as a lit tube, not a flat stripe.
         if (shadeOn) {
             ImRenderUtils::fillGradientRounded(dl, fill,
                 ImColor(255, 255, 255, 80), ImColor(255, 255, 255, 0),

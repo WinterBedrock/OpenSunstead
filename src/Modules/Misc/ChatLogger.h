@@ -3,12 +3,6 @@
 
 namespace SDK { class Packet; }
 
-// ChatLogger — intercepts incoming TextPacket (id 0x09) messages and appends
-// clean, human-readable lines to %APPDATA%/Sunstead/chat_log.txt.
-//
-// It is type-aware: only text the player would actually see in chat is written.
-// Translation keys, JSON envelopes and raw XUIDs are decoded or skipped so the
-// log never fills with keys like "chat.type.text" or numeric ids.
 class ChatLogger : public Module {
 public:
     ChatLogger() : Module("ChatLogger", "Logs incoming chat to %APPDATA%/Sunstead/chat_log.txt", Category::Misc, 0) {

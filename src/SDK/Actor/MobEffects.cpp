@@ -4,7 +4,7 @@
 #include "../../Memory/SigManager.h"
 #include "../../Memory/OffsetManager.h"
 #include "../../Core/Logger.h"
-#include "MinHook.h"
+#include "../../Hooks/HookEngine.h"
 
 #include <atomic>
 
@@ -87,9 +87,8 @@ void MobEffects::Initialize() {
 
     auto& sig = SigManager::GetInstance();
     if (sig.Actor_addEffect) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(sig.Actor_addEffect),
-                          &hkAdd, reinterpret_cast<LPVOID*>(&oAdd)) == MH_OK) {
-            MH_EnableHook(reinterpret_cast<LPVOID>(sig.Actor_addEffect));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(sig.Actor_addEffect),
+                          &hkAdd, reinterpret_cast<LPVOID*>(&oAdd))) {
             LOG_INFO("Actor::addEffect hooked", "MobEffects");
         } else {
             LOG_ERROR("failed to hook Actor::addEffect", "MobEffects");
@@ -99,9 +98,8 @@ void MobEffects::Initialize() {
     }
 
     if (sig.Actor_removeEffect) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(sig.Actor_removeEffect),
-                          &hkRem, reinterpret_cast<LPVOID*>(&oRem)) == MH_OK) {
-            MH_EnableHook(reinterpret_cast<LPVOID>(sig.Actor_removeEffect));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(sig.Actor_removeEffect),
+                          &hkRem, reinterpret_cast<LPVOID*>(&oRem))) {
             LOG_INFO("Actor::removeEffect hooked", "MobEffects");
         } else {
             LOG_ERROR("failed to hook Actor::removeEffect", "MobEffects");

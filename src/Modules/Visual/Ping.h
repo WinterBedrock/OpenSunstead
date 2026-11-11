@@ -2,10 +2,6 @@
 #include "../Module.h"
 #include "CounterStyle.h"
 
-// Ping HUD counter — the live RTT to the server on a counter plate ("42 ms").
-// The value comes from the RakPeer::GetAveragePing detour (NetPing in
-// Hooks/NetworkHooks.cpp); OnTick re-polls the captured remote so the display
-// updates between the game's own, much rarer polls.
 class Ping : public Module {
 public:
     Ping() : Module("Ping", "Displays the current ping to the server", Category::Visual, 0) {

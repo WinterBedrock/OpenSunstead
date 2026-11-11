@@ -3,14 +3,6 @@
 
 namespace SDK { class Actor; }
 
-// Sprint — holds sprint ON while walking forward.
-//
-// The game rebuilds MoveInputComponent from the keyboard inside
-// ClientInputUpdateSystem::tick, so a write from OnTick lands before that
-// rebuild and gets wiped on the next input pass (sprint on one tick, off the
-// next). The write now happens in a hook that runs AFTER that tick, into the
-// same place Latite's toggle-sprint writes: rawInputState.sprintDown, which is
-// bit 8 of the flag dword at +0x10 (the dword Baritone already writes).
 class Sprint : public Module {
 public:
     Sprint() : Module("Sprint", "Automatically sprints when moving forward", Category::Movement, 0) {
@@ -30,9 +22,6 @@ public:
     // After ClientInputUpdateSystem::tick has rebuilt the component.
     static void AfterInputTick();
 
-    // Installs the shared ClientInputUpdateSystem::tick hook (idempotent).
-    // GhostHand's pick override rides the same hook, so it must be creatable
-    // from outside too.
     static void EnsureInputHook();
     // True while the shared ClientInput tick hook is live.
     static bool HookInstalled();

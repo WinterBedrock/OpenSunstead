@@ -4,15 +4,6 @@
 #include "../Utils/MCSDK.h"
 #include <string>
 
-// NameCommand -- copies the player's CURRENT nick to the clipboard.
-//   .name   (aliases: nick, nickname, username, ign)
-// Read-only on purpose: the NameProtect fake-nick stays editable from its
-// module card in the ClickGUI; the chat command just answers "what is my nick"
-// by copying the live name the server sees.
-// SEH + std::string can't share a frame (C2712): the guarded resolve returns
-// the Actor*, the name read itself runs outside the __try (getRawName returns
-// a std::string and is internally guarded — the same call TargetHUD makes on
-// live actors every frame).
 static SDK::Actor* sehResolveLocalPlayer() {
     __try {
         SDK::ClientInstance* ci = SDK::ClientInstance::get();

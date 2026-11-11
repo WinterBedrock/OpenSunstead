@@ -34,9 +34,6 @@ static Vec3 closestPointOnBox(const Vec3& mn, const Vec3& mx, const Vec3& p) {
     return r;
 }
 
-// Small, smooth aim jitter inside the hitbox so rotations don't hard-lock onto
-// one fixed point every tick (anti-cheat heuristic). Magnitude stays tiny; the
-// randomness comes from the shared SDK generator.
 static Vec3 jitterAimPoint(const Vec3& base, const Vec3& mn, const Vec3& mx, bool haveBox) {
     // ~2-4 cm world jitter, clamped inside AABB when available.
     Vec3 out{ base.x + SDK::randSigned(0.035f),
@@ -54,10 +51,6 @@ static Vec3 jitterAimPoint(const Vec3& base, const Vec3& mn, const Vec3& mx, boo
     return out;
 }
 
-// Aim at the given world point through the silent-rotation channel. The angle
-// math itself is SDK::calcLookAngles (Bedrock convention, pitch clamped, yaw
-// wrapped); this only adds the sub-degree noise that keeps the silent channel
-// from being a perfectly frozen ray.
 static void aimAt(const Vec3& eye, const Vec3& aimPoint, bool flick) {
     const float dy = aimPoint.y - eye.y;
     if (vecHorizontalDistance(aimPoint, eye) < 1e-4f && std::fabs(dy) < 1e-4f) return;
@@ -72,10 +65,6 @@ static void aimAt(const Vec3& eye, const Vec3& aimPoint, bool flick) {
     if (flick) SilentRotation::SetOnce(yaw, pitch);
     else       SilentRotation::SetContinuous(yaw, pitch);
 
-    // Movement-frame restatement: publish the live WASD state + the real yaw
-    // the client integrated movement against, so the send hook can re-express
-    // the move vectors in the spoofed frame. Without this the server sees the
-    // direction bits against the aim yaw ("running backwards") and corrects.
     const bool w = (GetAsyncKeyState('W') & 0x8000) != 0;
     const bool a = (GetAsyncKeyState('A') & 0x8000) != 0;
     const bool s = (GetAsyncKeyState('S') & 0x8000) != 0;
@@ -110,10 +99,6 @@ static bool segIntersectsAABB(const Vec3& a, const Vec3& b, const Vec3& mn, cons
     return true;
 }
 
-// Interact(left-click) packet right before the attack transaction — the real
-// client's input pipeline pairs them, and some anticheats check for it
-// (Prax/Solstice "Interact"). Layout reversed from this build's factory
-// (sub_1416B3EA0): action u8 @ +0x30, targetRuntimeId u64 @ +0x38, pos @ +0x40.
 static bool sendInteractAttack(SDK::Actor* target, const Vec3& pos) {
     if (!g_MinecraftPackets_createPacket || !target) return false;
     // SEH + shared_ptr don't mix (C2712) — read the runtime id via the POD
@@ -152,21 +137,10 @@ static int weaponScore(const std::string& lowerName, bool swordOnly) {
     return score;
 }
 
-// Safely fetch the local player's inventory container (no C++ objects created,
-// so this can live inside a __try without tripping C2712).
-// NOTE: no outer __try here — getItemName()/Container::getItem() are each
-// internally SEH-guarded, and this loop builds std::string objects (C2712
-// forbids that inside a __try frame that would need C++ unwinding).
 static int sehGetBestWeaponSlot(SDK::Actor* lp, bool swordOnly) {
     SDK::Container* c = SDK::Inv::container(lp);
     if (!c) return -1;
 
-    // Name-based scoring — distinguishes sword > axe, honours swordOnly mode, and
-    // only ever matches ACTUAL weapons (weaponScore returns -1 for anything that
-    // isn't a sword/axe). Now that Item::mName resolves reliably, this is the
-    // sole path: if no real weapon is in the hotbar we return -1 and the caller
-    // leaves the held slot untouched (no more switching to food/blocks/pearls,
-    // which the old isNonBlockItem fallback caused when names were empty).
     int bestSlot = -1, bestScore = -1;
     for (int slot = 0; slot < 9; ++slot) {
         std::string n = SDK::Inv::lowerNameAt(c, slot);
@@ -183,10 +157,6 @@ void Aura::OnUpdate() {
 
     bool dbg = GetDebug();
 
-    // Clear the continuous silent-rotation latch at the top of every update. If
-    // we have a target this tick the branches below re-arm it; otherwise no aim
-    // is injected and the local view stays purely mouse-driven. A pending Flick
-    // one-shot survives this (see SilentRotation::Clear) so it still lands.
     SilentRotation::Clear(false);
 
     // Head-rotation smoothing (Solstice-style eased turn). Flick still snaps
@@ -198,10 +168,6 @@ void Aura::OnUpdate() {
     SDK::Level* level = ctx.level;
     SDK::Actor* lp = ctx.lp;
 
-    // DEAD-LOCAL GATE: on servers that show a death screen the local player
-    // actor is half-torn-down while the screen is up — attacking through it
-    // from here crashed the game. Health 0 (a valid read) means dead: stop
-    // everything for this frame.
     {
         const float hp = sehGetHealth(lp);
         if (hp >= 0.0f && hp <= 0.0f) return;
@@ -224,9 +190,6 @@ void Aura::OnUpdate() {
     float range2 = range * range;
 
     unsigned long long now = GetTickCount64();
-    // Attack throttle. With Randomize APS the interval is re-drawn after every
-    // hit from [APS Min..APS Max] — a perfectly constant click rate is itself
-    // an anticheat heuristic (Prax/Solstice parity).
     bool throttled;
     if (GetRandomizeAPS()) {
         throttled = mNextAttackAfterMs != 0 && now < mNextAttackAfterMs;
@@ -234,21 +197,9 @@ void Aura::OnUpdate() {
         throttled = (GetDelayMs() > 0.0f) && ((now - mLastBurst) < (unsigned long long)GetDelayMs());
     }
 
-    // TICK GATE: OnUpdate is driven by the camera/render update (per frame, up to
-    // hundreds of Hz), NOT the 20 Hz game tick. The vanilla attack transaction is
-    // queued into the once-per-tick PlayerAuthInputPacket; queuing it more than
-    // once per tick (or mid-flush) corrupts the outbound batch and the server
-    // kicks us ("Failed to decode batch packet ... malformed packet"). We read
-    // Actor::ticksExisted and refuse to swing/attack more than once per tick.
     long long curTick = lp->getTicksExisted();
     bool sameTick = (curTick >= 0 && curTick == mLastAttackTick);
-    // NOTE: throttling gates only the actual swing/attack below — we still scan
-    // and emit diagnostics every tick so the Debug feed stays informative even
-    // at small delays (default 50ms would otherwise suppress most frames).
 
-    // AntiBot: skip fake/decoy entities. Resolved once per burst; the module
-    // returns false for everything while it is disabled, so this is a no-op
-    // unless the user has AntiBot on.
     AntiBot* antiBot = static_cast<AntiBot*>(ModuleManager::GetInstance().GetModuleByName("AntiBot"));
 
     int rotMode = GetRotateMode(); // 0=None 1=Normal (continuous tracking) 2=Flick
@@ -257,14 +208,6 @@ void Aura::OnUpdate() {
     int players = 0, inRange = 0, posFail = 0, botSkip = 0;
     float nearest2 = 1e30f;
 
-    // SINGLE-TARGET selection (Solstice/Latite "Single" mode). The previous
-    // build swung + GameMode::attack()'d EVERY in-range player on the SAME game
-    // tick. On a crowded server that stuffed many ItemUseOnEntity attack
-    // transactions + many arm-swing AnimatePackets into one outbound RakNet
-    // batch; the server's batch decoder then rejected the frame
-    // ("Failed to decode batch packet ... Sent malformed packet") and kicked
-    // us. Legitimate combat is one swing + one attack per tick, so we now pick
-    // the CLOSEST in-range player and hit only that one.
     SDK::Actor* bestTarget = nullptr;
     float bestT2 = 1e30f;
     Vec3  bestTPos{};
@@ -291,11 +234,6 @@ void Aura::OnUpdate() {
         if (d2 < bestT2) { bestT2 = d2; bestTPos = p; bestTarget = a; }
     }
 
-    // RAYCAST BYPASS (Solstice "Raycast"): only hit what the view ray actually
-    // reaches. If another in-range PLAYER's hitbox blocks the eye->target ray,
-    // that player becomes the target (attacking what a real crosshair would
-    // hit); a ray blocked by anything else means no attack this tick —
-    // attacking through walls is the classic flag.
     if (bestTarget && GetRaycast()) {
         for (SDK::Actor* a : actors) {
             if (!a || a == lp || a == bestTarget) continue;
@@ -318,10 +256,6 @@ void Aura::OnUpdate() {
         }
     }
 
-    // HURT TIME (Prax): vanilla invulnerability frames last 10 ticks (500 ms);
-    // hitting the same target faster than any player could is both wasted
-    // swings and a heuristic. While the target is in i-frames we hold the
-    // attack (rotation keeps tracking).
     bool hurtGated = false;
     if (bestTarget && GetHurtTime()) {
         const unsigned int eid = GM::actorEntityId(bestTarget);
@@ -331,38 +265,9 @@ void Aura::OnUpdate() {
             hurtGated = true;
     }
 
-    // WEAPON AUTO-SWITCH (Solstice parity). Full = switch-and-stay while we have
-    // a target; OnAttack is handled at the attack site below. When we have no
-    // target (or the mode is off) we restore the slot the player originally held
-    // so we never strand them on a weapon slot.
     int switchMode = GetSwitchMode();       // 0=None 1=Full 2=OnAttack
     bool swordOnly = (GetWeaponMode() == 0);
 
-    // Debug: one-shot dump of hotbar item names so we can verify the Item-name
-    // read (and hence why weapon switching may not be triggering). Rate-limited to
-    // ~once/sec via a local timer, and logged directly (bypassing auraDbg's shared
-    // throttle) so all 9 rows print together.
-    static unsigned long long s_hotbarDumpLast = 0;
-    if (dbg && bestTarget && switchMode != 0 && (GetTickCount64() - s_hotbarDumpLast) > 1000) {
-        s_hotbarDumpLast = GetTickCount64();
-        SDK::Container* c = SDK::Inv::container(lp);
-        if (c) {
-            for (int s = 0; s < 9; ++s) {
-                SDK::ItemStack* is = c->getItem(s);
-                std::string nm = is ? is->getItemName() : std::string();
-                if (is && nm.empty()) {
-                    // Name resolution failed for this slot - dump raw memory
-                    // layout so the correct Item::mName offset is visible.
-                    LOG_INFO("hotbar[" + std::to_string(s) + "] " + is->debugNameInfo(), "Aura");
-                } else {
-                    LOG_INFO("hotbar[" + std::to_string(s) + "]='" + nm + "'", "Aura");
-                }
-            }
-        }
-        LOG_INFO("bestWeaponSlot=" + std::to_string(sehGetBestWeaponSlot(lp, swordOnly)) +
-                     " selSlot=" + std::to_string(SDK::Inv::selectedSlot(lp)) +
-                     " swordOnly=" + std::to_string((int)swordOnly), "Aura");
-    }
 
     if (switchMode == 1 && bestTarget) {
         int best = sehGetBestWeaponSlot(lp, swordOnly);
@@ -380,18 +285,6 @@ void Aura::OnUpdate() {
         mPrevSlot = -1;
     }
 
-    // NORMAL (continuous) rotation: track the nearest target on EVERY update,
-    // regardless of the attack throttle. This runs on the game-update thread
-    // (UpdatePlayerFromCameraSystemUtil::_updatePlayer) — the SAME place Solstice
-    // applies rotation just before the PlayerAuthInput flush.
-    //
-    // ROOT-CAUSE FIX for the "yaw jitters left/right when not facing the target":
-    // the old build wrote the rotation from OnRender() (the D3D present thread),
-    // which raced the game thread's own camera-rotation write every frame. When
-    // your mouse yaw already matched the target the two writers agreed and it
-    // looked fine; when you looked away they fought and the yaw oscillated. The
-    // slower-changing pitch barely showed it, which is why "vertical was fine".
-    // Applying rotation here (single writer, game thread) removes the race.
     if (rotMode == 1 && bestTarget) {
         // Closest hitbox point + small in-box jitter (not a hard single-point lock).
         Vec3 bmn, bmx, aim = bestTPos;
@@ -401,9 +294,6 @@ void Aura::OnUpdate() {
         aimAt(myPos, aim, /*flick=*/false);
     }
 
-    // Hit exactly ONE target this tick: only when the APS throttle allows AND we
-    // have not already attacked on this game tick (tick gate above). The Hurt
-    // Time gate holds the swing while the target is in invulnerability frames.
     if (bestTarget && !throttled && !sameTick && !hurtGated) {
         // Flick rotation: snap toward the target only at the instant of the hit.
         if (rotMode == 2) {
@@ -414,9 +304,6 @@ void Aura::OnUpdate() {
             aimAt(myPos, aim, /*flick=*/true);
         }
 
-        // OnAttack switch (Solstice Spoof-style): switch to the best weapon just
-        // for this hit, then restore the previously-held slot right after. Only
-        // in OnAttack mode; Full mode already switched-and-stays above.
         int onAtkPrevSlot = -1;
         bool onAtkSwitched = false;
         if (switchMode == 2) {
@@ -427,16 +314,6 @@ void Aura::OnUpdate() {
             }
         }
 
-        // Prime the Level HitResult as an ENTITY hit so the serialized attack
-        // transaction is consistent, swing FIRST (arm-swing animation), then
-        // attack — the order Latite and Solstice use so the server registers
-        // the hit rather than just a look. All gated to once per game tick.
-        //
-        // The click position handed to attack() is the point ON the target we
-        // are nominally hitting. It is a REQUIRED third argument (see
-        // GameMode::attack) — the game copies it into the outbound
-        // ItemUseOnEntity transaction — so it is computed here rather than left
-        // to whatever junk the register happened to hold.
         Vec3 clickMn, clickMx, clickPos = bestTPos;
         if (sehGetActorBox(bestTarget, &clickMn, &clickMx))
             clickPos = closestPointOnBox(clickMn, clickMx, myPos);
@@ -487,17 +364,6 @@ void Aura::OnUpdate() {
             (nearest2 < 1e29f ? std::sqrt(nearest2) : -1.0f), GetRange(), posFail, botSkip);
 }
 
-// The CORNER target visual: a bold diamond standing on its corner, centred on
-// (cx, cy), with a SMALL GAP at the middle of every edge. Corners are drawn as
-// JOINTED paths (mid-of-prev-edge -> vertex -> mid-of-next-edge) so the stroke
-// fills the vertex itself, and each vertex is rounded by a tiny quadratic
-// bezier through it. The stroke carries a flowing THEME GRADIENT (tinted per
-// vertex like the ESP boxes) plus a soft two-pass GLOW hugging the edges, and
-// the whole diamond swings on a slow bounce-rotation (left, a beat of rest,
-// right, repeat).
-// ---------------------------------------------------------------------------
-// Bounce-rotation curve: rest at -1, ease to +1, rest, ease back. The result
-// reads as the diamond swinging left, pausing, swinging right.
 static float auraCornerSwing(float t) {
     const float period = 2.8f;
     float u = std::fmod(t, period);
@@ -531,9 +397,6 @@ static void drawCornerDiamond(ImDrawList* dl, float cx, float cy, float R, float
     // control point ON the vertex and end points a hair down each edge.
     const float rr = std::min(th * 0.75f, R * 0.16f);
 
-    // One edge->vertex->edge path, emitted WHITE so its vertices can be
-    // tinted in place with the vertical theme gradient (the ESP-box recipe:
-    // scale each vertex's coverage alpha, never replace it).
     auto buildPath = [&](int k) {
         const ImVec2& P = V[(k + 3) & 3];
         const ImVec2& A = V[k];
@@ -588,10 +451,6 @@ static void drawCornerDiamond(ImDrawList* dl, float cx, float cy, float R, float
     strokeGradient(th,         1.00f);
 }
 
-// The shared ZOOM-OUT exit: replays the last cached geometry of the active
-// visual mode, scaled DOWN into its own centre by the remaining mVisAlpha
-// driver. Used both when the target is lost and when the module is toggled
-// off (the always-render loop keeps calling OnRender for exactly this).
 void Aura::renderExitZoom() {
     if (mVisAlpha <= 0.01f) { mVisTarget = nullptr; return; }
     ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -629,12 +488,6 @@ void Aura::renderExitZoom() {
 }
 
 
-// Rotation (both Normal continuous tracking and Flick) is now applied inside
-// OnUpdate(), which runs on the game-update thread
-// (UpdatePlayerFromCameraSystemUtil::_updatePlayer) — the correct single-writer
-// point, matching Solstice. Writing rotation from here (the D3D present thread)
-// raced the game thread and caused the horizontal-yaw jitter, so OnRender never
-// touches rotation. What OnRender DOES draw is the optional target visual.
 void Aura::OnRender() {
     const int visMode = GetTargetVisual();
     if (visMode == 0) {                       // 0 = None
@@ -648,9 +501,6 @@ void Aura::OnRender() {
         mVisTarget = nullptr;
         mMorphT = 1.0f;
     }
-    // Disabled: the visual still plays its fast zoom-out exit from the cached
-    // geometry instead of popping away (Aura is in the always-render loop
-    // precisely for this).
     if (!IsEnabled()) {
         if (mVisAlpha > 0.001f) {
             float dtD = ImGui::GetIO().DeltaTime;
@@ -696,10 +546,6 @@ void Aura::OnRender() {
         if (d2 < bestT2) { bestT2 = d2; target = a; }
     }
 
-    // ---- target-visual animation state machine ----------------------------
-    // Acquire -> fade in. Lost -> fade out (drawing the cached geometry).
-    // Switch -> morph the anchor from the old target's position to the new
-    // one over 0.22 s instead of teleporting.
     if (target != mVisTarget) {
         if (target && mVisTarget && mVisAlpha > 0.05f) {
             // Switch: capture the previous target's anchor (screen-space for
@@ -714,9 +560,6 @@ void Aura::OnRender() {
         mVisTarget = target;
     }
     const float alphaGoal = target ? 1.0f : 0.0f;
-    // Acquire fades in gently; LOSE drives a fast ZOOM-OUT instead of a fade
-    // — the driver doubles as the scale, the visual collapses into its centre
-    // over ~130 ms and vanishes.
     const float visEase = std::min(1.0f, dt * (target ? 11.0f : 20.0f));
     mVisAlpha += (alphaGoal - mVisAlpha) * visEase;
     if (mVisAlpha < 0.002f) mVisAlpha = 0.0f;
@@ -726,10 +569,6 @@ void Aura::OnRender() {
     // Collapsed fully -> nothing left to draw.
     if (mVisAlpha <= 0.01f) { mVisTarget = nullptr; return; }
 
-    // ---- ZOOM-OUT exit: target lost (or the module just toggled off) ->
-    //      replay the last cached geometry, scaled DOWN into its own centre
-    //      by the remaining driver. The alpha stays full until the shape is
-    //      nearly gone (a crisp shrink, not a fade-out).
     if (!target) {
         renderExitZoom();
         return;
@@ -744,10 +583,6 @@ void Aura::OnRender() {
 
     Vec3 mn, mx;
     if (!sehGetActorBox(target, &mn, &mx)) return;
-    // Interp rebase (the ESP recipe): the raw AABB is server-tick-stepped, so
-    // projecting it directly jitters against the ~60 fps camera — the ESP
-    // boxes are smooth because they shift the box by the interpolated
-    // render-position delta first. Same fix here.
     {
         Vec3 apos{}, rp = SDK::interpRenderPos(target);
         if (sehGetPos(target, &apos)) {
@@ -773,17 +608,10 @@ void Aura::OnRender() {
     }
     if (maxX - minX < 2.0f || maxY - minY < 2.0f) return;
 
-    // ---- RINGS (Rise SigmaRing, verbatim parameters) -----------------------
-    // A flowing gradient ring around the target's body, sweeping bottom→top.
-    // Fades with mVisAlpha (acquire / lose / switch) and MORPHS its world
-    // anchor when the target jumps to another player.
     if (visMode == 2) {
         const double nowMs = (double)GetTickCount64();
         const float width = std::max(mx.x - mn.x, 0.1f);
         const float height = std::clamp(mx.y - mn.y, 1.5f, 2.2f);
-        // Anchor: the target's interpolated render position (push-time pair +
-        // served alpha — the frame the presented model was drawn at) so the
-        // ring glues to the model even while it moves.
         Vec3 rp = SDK::interpRenderPos(target);
         const float delta = rp.y - mn.y;
         if (delta > 0.8f && delta < 2.2f) rp.y -= 1.62f;
@@ -823,9 +651,6 @@ void Aura::OnRender() {
         worldToScreen(Vec3(rp.x, (yTop + yBot) * 0.5f, rp.z), mvp, origin, screen, &mRingCenter);
         if (visible < 8) return;
 
-        // Colour: the live theme palette swept AROUND the ring (a half cycle
-        // per revolution) plus a slow flow, so the whole circumference reads
-        // as one continuous gradient instead of a two-tone wobble.
         const uint64_t themeMs = ColorUtils::GetTimeMs();
         const float span = ColorUtils::getThemedPeriod() * 0.5f;
         const float flow = (float)(themeMs % 60000ull) * 0.05f;
@@ -862,15 +687,6 @@ void Aura::OnRender() {
     float cy = (minY + maxY) * 0.5f;
     const float boxW = maxX - minX, boxH = maxY - minY;
 
-    // ---- CORNER: a BOLD DIAMOND centred on the player ----------------------
-    // One very thick square outline standing on its corner, centred on the
-    // model, with a SMALL GAP at the MIDDLE of every edge. The stroke carries
-    // a flowing theme GRADIENT, a soft edge GLOW, whisper-rounded corners, and
-    // swings on the bounce-rotation.
-    // SCALE WINDOW: clamp the diamond into [min, max] pixels. Up close the
-    // projected box explodes (or collapses when the near-plane eats corners),
-    // which read as a huge hair-thin diamond — the window keeps it a FAT,
-    // consistent marker at every distance.
     float R = (std::max(boxW, boxH) * 0.5f * 0.52f + 2.0f) * breathe;
     if (R < 64.0f) R = 64.0f;
     if (R > 150.0f) R = 150.0f;
@@ -895,9 +711,6 @@ void Aura::OnRender() {
     mLastTh = th;
 }
 
-// Stop injecting the moment Aura is toggled off, otherwise the last continuous
-// aim would keep being written into outgoing packets. Also restore the slot if
-// Full weapon-switch left the player on a weapon.
 void Aura::OnDisable() {
     SilentRotation::Clear(true);
     mNextAttackAfterMs = 0;

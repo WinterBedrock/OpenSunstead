@@ -1,15 +1,12 @@
 #pragma once
-// Sunstead SDK — shared math layer (vector / angle / matrix / worldToScreen).
-// The geometry PODs (Vec2/Vec3/Matrix4/AABB) live in Types.h; this header only
-// adds free operators/functions over them, so it must come AFTER Types.h.
 
 #include <cmath>
 #include <imgui.h>
 
 namespace SDKMath {
     constexpr float PI  = 3.14159265358979323846f;
-    constexpr float D2R = 0.01745329251994329577f; // degrees -> radians
-    constexpr float R2D = 57.2957795130823208768f; // radians -> degrees
+    constexpr float D2R = 0.01745329251994329577f;
+    constexpr float R2D = 57.2957795130823208768f;
 }
 
 // Vec2
@@ -24,7 +21,6 @@ inline float vecLengthSq(const Vec2& a)              { return a.x * a.x + a.y * 
 inline float vecLength(const Vec2& a)                { return std::sqrt(vecLengthSq(a)); }
 inline Vec2  vecNormalize(const Vec2& a)              { float l = vecLength(a); return (l > 1e-6f) ? Vec2(a.x / l, a.y / l) : Vec2(0, 0); }
 
-// Vec3 — member operator+/- are in Types.h; these are the remaining helpers.
 inline Vec3 operator*(const Vec3& a, float s)        { return Vec3(a.x * s, a.y * s, a.z * s); }
 inline Vec3 operator/(const Vec3& a, float s)        { return Vec3(a.x / s, a.y / s, a.z / s); }
 
@@ -48,9 +44,6 @@ inline float wrapAngle180(float deg) {
 // Shortest signed angular delta from `from` to `to`, both in degrees.
 inline float angleDelta(float from, float to) { return wrapAngle180(to - from); }
 
-// Look angles (degrees) from `eye` to `target`, Bedrock convention:
-// yaw = atan2(dz,dx)*R2D - 90, pitch = -atan2(dy,horiz) clamped to +-89.9.
-// Returns Vec2{pitch,yaw} — the ActorRotationComponent (x,y) ordering.
 inline Vec2 calcLookAngles(const Vec3& eye, const Vec3& target) {
     float dx = target.x - eye.x;
     float dy = target.y - eye.y;
@@ -82,9 +75,6 @@ inline void mat4Multiply(const float* A, const float* B, float* C) {
         }
 }
 
-// World -> screen using a precomputed MVP (proj * view, column-major) and the
-// render origin the matrices are built around. Mirrors Latite's
-// WorldToScreen::convert. Returns false when behind the camera; `out` = pixels.
 inline bool worldToScreen(const Vec3& world, const float* mvp, const Vec3& origin,
                           const ImVec2& screen, ImVec2* out) {
     float px = world.x - origin.x;

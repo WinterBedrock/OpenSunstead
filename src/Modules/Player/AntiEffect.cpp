@@ -43,9 +43,6 @@ bool AntiEffect::isBlocked(int id) const {
     }
 }
 
-// Purge: walk the local player's MobEffectsComponent vector and neutralize
-// every blocked instance. All writes are POD field pokes inside one SEH frame;
-// the game's own effect ticker performs the native removal next tick.
 void AntiEffect::OnUpdate() {
     if (!IsEnabled()) return;
     const int mode = GetMode();

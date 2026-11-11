@@ -22,10 +22,6 @@ namespace {
         return d;
     }
 
-    // Movement-frame restatement (see header). The client integrates WASD
-    // against the REAL yaw; the server will integrate the same bits against
-    // the SPOOFED yaw. We publish the live WASD state + real yaw here, and
-    // the send hook re-expresses it in the spoofed frame.
     std::atomic<bool>  g_moveActive{ false };
     std::atomic<float> g_moveRealYaw{ 0.0f };
     std::atomic<int>   g_moveFwd{ 0 };

@@ -15,6 +15,7 @@ public:
 
     static void InstallHook();
     static void UninstallHook();
+    static void HookDeviceVtables(void** devVt, void** listVt);
     static void InjectFreeCamGhost(void* self_ard, void* barc, __int64 cameraPos, void* skipActor);
     static void InjectFreeCamGhostCached();
     static void EnsureDeviceHooks();

@@ -19,9 +19,6 @@ struct SegmentProjection {
     float lateralDistance = 0.f;
 };
 
-// Projects the player onto the infinite route line; clamping to the segment
-// would turn longitudinal overshoot into "lateral" error and make a straight
-// sprint look like it left the path.
 SegmentProjection projectOntoSegment(const Vec3& point, const BlockPos& from, const BlockPos& to) {
     const float sx = (float)from.x + 0.5f, sz = (float)from.z + 0.5f;
     const float ex = (float)to.x + 0.5f, ez = (float)to.z + 0.5f;
@@ -134,9 +131,6 @@ void PathExecutor::writeInput(SDK::Actor* player, const float forwardAmount,
     if (!input)
         return;
 
-    // Sanitize into vanilla's stick bounds: finite, inside the unit circle,
-    // deadzone-cleared. Bedrock's own pipeline enforces these before the
-    // movement prediction and AuthInput see the vector.
     Vec2 movement(strafeAmount, forwardAmount);
     const float magnitudeSquared = movement.x * movement.x + movement.y * movement.y;
     if (!std::isfinite(movement.x) || !std::isfinite(movement.y)) {
@@ -253,10 +247,6 @@ ExecutionStatus PathExecutor::tick(SDK::Actor* player, const BlockSourceWorld& w
         progressInitialized = true;
     }
 
-    // ---- consume reached nodes ------------------------------------------
-    // Baritone's success rule: the physical feet block must BE the movement
-    // destination, with relaxed rules for falls and swims where Bedrock
-    // momentum routinely carries past block centres.
     bool outsideActiveCorridor = false;
     if (onGround && index > 0 && index < path.size()) {
         const auto projection = projectOntoSegment(feet, path[index - 1].pos, path[index].pos);
@@ -578,9 +568,6 @@ ExecutionStatus PathExecutor::tick(SDK::Actor* player, const BlockSourceWorld& w
     const float pathMovementScale = (parkourRepositioning ? 0.35f : 1.f) *
         humanApproachScale * ascendApproachScale;
 
-    // Decide the takeoff before crossing the launch point: at full sprint the
-    // player covers ~0.28 blocks per tick, so a fixed trigger walks the
-    // 0.6-wide body off the source block first.
     const float measuredApproachSpeed = std::max(parkourAlongSpeed, 0.f);
     const float nextApproachSpeed = bedrock_physics::nextGroundVelocity(measuredApproachSpeed, 1.f, true, false);
     const float nextParkourAlong = parkourAlong + nextApproachSpeed;
@@ -637,9 +624,6 @@ ExecutionStatus PathExecutor::tick(SDK::Actor* player, const BlockSourceWorld& w
         target.y > feet.y + 0.2f) || requestParkourJump ||
         (inWaterBlocks && (node.movement == MovementType::Swim || target.y >= feet.y - 0.15f));
 
-    // One-block obstacle on a supposedly level path: slabs, fence posts and
-    // farmland edges sit between whole-block classifications. Jump when the
-    // cell ahead has collision and the two above it do not.
     bool obstacleJump = false;
     if (!shouldJump && onGround && ordinaryMovement) {
         const int aheadX = (int)std::floor(feet.x + direction.x * 0.35f);

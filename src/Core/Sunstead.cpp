@@ -14,6 +14,7 @@
 #include "../Hooks/GameHooks.h"
 #include "../Modules/ModuleManager.h"
 #include "../Modules/Visual/Notifications.h"
+#include "../Modules/Visual/Swing.h"
 #include "../Render/RenderManager.h"
 #include "../SDK/SDK.h"
 #include "../SDK/Client/ClientInstance.h"
@@ -214,6 +215,9 @@ void Sunstead::Shutdown() {
     SoundUtils::PlayResource(IDR_SOUND_UNINJECT, L".wav");
     ConfigManager::Save("default");
     UpdateChecker::GetInstance().Shutdown();
+    // Give the game back its untouched swing-rotation instruction before any
+    // of our code pages go away.
+    Swing::RestoreAnglePatch();
     HookManager::GetInstance().Shutdown();
     RenderManager::GetInstance().Shutdown();
 

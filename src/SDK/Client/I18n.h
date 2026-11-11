@@ -1,10 +1,4 @@
 #pragma once
-// I18n — resolves the %translation.key placeholders servers put on the wire
-// (vanilla chat renders them at draw time; a raw key is otherwise shown
-// literally). Thin SEH-guarded wrapper around I18n::get(repo, std::string&
-// out, const std::string& key, const std::string& lang) — sub_146583F00 on
-// 1.26.50.04 — plus SigManager's global repo pointer (I18n_repo): one call
-// per distinct key, results validated before use.
 
 #include "../../Memory/SigManager.h"
 #include <string>
@@ -15,9 +9,6 @@ namespace SDK::I18n {
 // int/void*(__fastcall*)(repo, std::string* out, key, lang) — sub_146583F00.
 using GetFn = void*(__fastcall*)(void*, void*, const void*, const void*);
 
-// POD-only SEH shim (MSVC C2712: a __try function may not own unwindable
-// locals). On fault the CALLER leaks the result buffer instead of unwinding
-// a std::string the game may have torn mid-write.
 inline bool sehCallGet(const void* fn, void* repo, void* out,
                        const std::string* key, const std::string* lang) {
     __try {
@@ -28,9 +19,6 @@ inline bool sehCallGet(const void* fn, void* repo, void* out,
     }
 }
 
-// Translate one key (WITHOUT the leading '%', e.g. "multiplayer.player.left").
-// Tries the lang chain ["", "en_US", "en_GB"]. A result equal to the key
-// (the repo's not-found answer) counts as failure.
 inline bool translateKey(const std::string& key, std::string& out) {
     out.clear();
     SigManager& sigs = SigManager::GetInstance();
@@ -50,9 +38,6 @@ inline bool translateKey(const std::string& key, std::string& out) {
 
     static const char* kLangs[] = { "", "en_US", "en_GB" };
     for (const char* langCode : kLangs) {
-        // The result std::string lives on the heap: if the game call faults
-        // halfway through writing it we leak the 32-byte buffer instead of
-        // unwinding a torn object inside an SEH handler.
         void* mem = operator new(sizeof(std::string));
         std::string* res = new (mem) std::string();
         std::string lang(langCode);
@@ -73,10 +58,6 @@ inline bool translateKey(const std::string& key, std::string& out) {
     return false;
 }
 
-// Replace every "%some.translation.key" token in a chat line with the game's
-// translation; unknown keys stay as-is, and %s/%d printf tokens are left
-// untouched (their parameters are not part of the wire text). Keys are
-// [a-z0-9_.] with at least one dot, so the scan is a simple state machine.
 inline std::string replacePlaceholders(const std::string& text) {
     if (text.size() < 5 || text.find('%') == std::string::npos) return text;
 

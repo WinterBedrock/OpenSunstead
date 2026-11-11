@@ -39,9 +39,6 @@ static ToolType classifyTool(const std::string& n, int& tierOut) {
     return t;
 }
 
-// Map a block identifier to the ideal tool family. Order matters: more specific
-// families are tested first so overlapping substrings resolve correctly
-// (e.g. "*_brick" stays a pickaxe target, "concrete_powder" a shovel target).
 static ToolType blockTool(const std::string& n) {
     if (has(n, "web"))                                        return TT_SWORD;
     if (has(n, "leaves") || has(n, "wool") || has(n, "vine")) return TT_SHEARS;
@@ -130,10 +127,6 @@ static std::string sehGetBlockName(SDK::ClientInstance* ci, const SDK::BlockPos&
 
 // Container / slot access is SDK::Inv (see SDK/Inventory/InventoryAccess.h).
 
-// Best hotbar slot (0..8) holding a tool of `want` (with a shears->sword
-// fallback for foliage). Returns -1 if no suitable tool is in the hotbar.
-// getItemName builds a std::string and is internally SEH-guarded, so no __try
-// wraps this scan (a __try around std::string is C2712).
 static int findBestTool(SDK::Actor* lp, ToolType want, bool preferSpeed) {
     SDK::Container* c = SDK::Inv::container(lp);
     if (!c) return -1;

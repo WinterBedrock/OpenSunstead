@@ -13,9 +13,13 @@ public:
 
     static void InstallHooks();
 
-    static uintptr_t SwingRotateReturn();
-    static uintptr_t SwingRotateFn();
-    static float SwingAngleScale();
+    // Custom Angle: current effective angle in degrees (vanilla -20), applied
+    // through the direct displacement patch in Swing.cpp.
+    float CustomAngleDegrees();
+
+    // Restore the patched instruction to its original displacement. Call before
+    // handing the process back (eject path) — the slot itself stays alive.
+    static void RestoreAnglePatch();
 
 private:
     static bool InstallHook();

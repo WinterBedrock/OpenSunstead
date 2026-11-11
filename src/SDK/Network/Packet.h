@@ -13,12 +13,6 @@ extern uintptr_t g_MouseDevice_feed;
 
 namespace SDK {
 
-// Ids the client actually reacts to. The full table lives in PacketTypes.h
-// (TypePacket, decimal); the values here are the same numbers in hex.
-//   CorrectPlayerMovePrediction = 161 = 0xA1 — server-authoritative movement
-//   rejection (the modern lagback; MovePlayer is the legacy teleport).
-// EndId = 0x169: the highest id createPacket handles on 26.60 is 0x168 (case
-// 360), and the receive-hook init iterates 0..EndId.
 enum class PacketID:int{Unknown=-1,Text=0x09,SetTime=0x0A,MoveActorAbsolute=0x12,MovePlayer=0x13,SetEntityMotion=0x28,LevelChunk=0x3A,PlayerList=0x3F,PlaySound=0x56,PlayerSkin=0x5D,MoveActorDelta=0x6F,CommandOutput=0x4F,PlayerAuthInput=0x90,CorrectPlayerMovePrediction=0xA1,EndId=0x169};
 class PacketHandlerDispatcher{public:virtual ~PacketHandlerDispatcher()=default;virtual void handle(void*,void*,std::shared_ptr<class Packet>){}
     uintptr_t getPacketHandler(){void**vt=*(void***)this;constexpr int kSlot=::Layout::VTable::Packet_getId;return(vt&&sdk_safe_ptr(vt,::Layout::VTable::Guard(kSlot)))?(uintptr_t)vt[kSlot]:0;}
@@ -32,11 +26,6 @@ struct MouseAction{int16_t x,y,dx,dy;int8_t action,data;int pointerId;bool force
 class MouseDevice{public:int16_t clickX,clickY,x,y,dx,dy,xOld,yOld;bool buttonStates[7];std::vector<MouseAction> inputs;int32_t firstMovementType;
     static MouseDevice* get(){auto*m=reinterpret_cast<MouseDevice*>(g_mouseDeviceAddr);return(m&&sdk_safe_ptr(m,64))?m:nullptr;}
 
-    // MouseDevice::feed — 0x140361AD0 on 1.26.50.04. action 0=move 1=left
-    // 2=right 3=middle 4=wheel; data 1=down 0=up. The function GameCore::
-    // handleMouseInput calls per physical event: appends a MouseAction to the
-    // input queue and sets buttonStates[action]; the queue is drained on the
-    // same thread, so a down+up pair is a complete game-native click.
     void feed(int8_t action, int8_t data, int16_t x, int16_t y,
               int16_t dx = 0, int16_t dy = 0, int8_t pointerId = 0) {
         if (!g_MouseDevice_feed || !sdk_safe_ptr(this, 64)) return;
@@ -45,11 +34,6 @@ class MouseDevice{public:int16_t clickX,clickY,x,y,dx,dy,xOld,yOld;bool buttonSt
     }
 };
 
-// One synthetic right-click (down+up) via the game's own mouse primitive;
-// false when the device or feed function is unavailable. SEH-guarded (live
-// queue). MUST be called from the render thread — the input queue is produced
-// and drained there, so pushing from the game thread races the drain (game-
-// thread code uses requestRightClick()).
 inline bool injectRightClick() {
     MouseDevice* m = MouseDevice::get();
     if (!m || !g_MouseDevice_feed) return false;
@@ -61,9 +45,6 @@ inline bool injectRightClick() {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Click mailbox: game-thread modules bump this; the Present hook drains it
-// and feeds the clicks on the render thread. Atomic because the two threads
-// genuinely overlap.
 extern std::atomic<int> g_pendingRightClicks;
 inline void requestRightClick(int n = 1) {
     if (n > 0) g_pendingRightClicks.fetch_add(n, std::memory_order_relaxed);

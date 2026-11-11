@@ -3,10 +3,7 @@
 
 FogColor::FogColor()
     : Module("FogColor", "Overrides the world fog colour", Category::Visual, 0) {
-    // [0] Sky Color type: Custom uses the picker below, Theme uses the
-    //     interface theme's gradient RGB.
     AddSetting(new EnumSetting("Sky Color", "Colour source", 0, { "Custom", "Theme" }));
-    // [1] Custom colour (only used when type == Custom)
     AddSetting(new ColorSetting("Color", "Custom fog colour", 0.55f, 0.25f, 0.85f, 1.0f));
 }
 

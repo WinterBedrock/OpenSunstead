@@ -1,8 +1,3 @@
-// LevelRenderer::renderLevel detour and the render-thread gateways it owns:
-// visible third-person rotation smoothing, HUD ticks, deferred chat commands,
-// the per-frame FreeCam ghost reset — plus the per-actor nametag builder
-// (NameTags "Hide Original"), Actor::attack (combat signal / Switcher) and
-// ItemUseSlowdownApply (NoSlow).
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
@@ -21,7 +16,7 @@
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
 #include "../SDK/Actor/MobEffects.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <cmath>
 #include <string>
 
@@ -75,9 +70,6 @@ namespace {
             while (s_lYaw > 180.0f) s_lYaw -= 360.0f;
             while (s_lYaw < -180.0f) s_lYaw += 360.0f;
 
-            // Nothing to show: no active aim and the smoothed value settled
-            // back onto the real rotation — except in third person, where the
-            // drawn model always animates.
             const float settle = fabsf(dyaw) + fabsf(destPitch - s_lPitch);
             if (!thirdPerson) return false;
             if (!haveTarget && settle < 0.05f) return false;
@@ -135,9 +127,6 @@ namespace {
         // New world-render frame: the FreeCam ghost body may be injected once.
         GameHooks::ResetFreeCamGhostFrame();
 
-        // FOV module scaling (Zoom / Sprint kick): this is the single writer
-        // for the LRP projection focal elements, applied against the game's
-        // CURRENT base renormalized, BEFORE the world draws with it.
         SDK::sehApplyFovMod(g_zoomProjScale * g_sprintFovScale);
 
         // Re-assert sprint AFTER tick validation cleared it, BEFORE the
@@ -152,7 +141,7 @@ namespace {
             oRenderLevel(lvl, scn, unk);
 
         gh::runDeferredChatCommands();
-        gh::tryResolveAndSwapPickRange();
+
         tryOnTick();
 
         // Re-apply with the FRESH multipliers OnTick just published (renormalized,
@@ -166,10 +155,6 @@ namespace {
         Chams::InjectFreeCamGhostCached();
     }
 
-    // ---- per-actor nametag builder (NOT the per-frame renderNametag pass —
-    // that one owns its out-vector, so a hook there could hide nothing).
-    // Vanilla "no nametag" = zero the 24-byte out vector and return it; the
-    // caller appends nothing. Actor arrives as arg5.
     typedef void* (__fastcall* nametagBuildForActor_t)(void* fontCtx, void* outVector,
                                                         void* layout, void* dataProvider,
                                                         void* actor, void* name,
@@ -211,9 +196,6 @@ namespace {
         if (oItemUseSlowdown) oItemUseSlowdown(a1, factor, move, out);
     }
 
-    // Actor::attack — TargetHUD hit flash + Switcher's pre-attack slot swap.
-    // The weapon's MobEquipmentPacket must go out BEFORE the attack
-    // transaction is serialized; the slot restore is Switcher::OnUpdate's job.
     typedef void* (__fastcall* actorAttack_t)(void* obj, void* a2, void* target, void* cause, void* a5);
     static actorAttack_t oActorAttack = nullptr;
 
@@ -244,23 +226,17 @@ void InstallRenderLevelHook() {
     // Hook LevelRenderer::renderLevel.
     uintptr_t renderLevelAddr = SigManager::GetInstance().LevelRenderer_renderLevel;
     if (renderLevelAddr) {
-        MH_STATUS ch = MH_CreateHook(reinterpret_cast<LPVOID>(renderLevelAddr),
-                                     &hkLevelRenderer_renderLevel,
-                                     reinterpret_cast<LPVOID*>(&oRenderLevel));
-        if (ch == MH_OK || ch == MH_ERROR_ALREADY_CREATED) {
-            MH_STATUS eh = gh::HookEnable(reinterpret_cast<LPVOID>(renderLevelAddr));
-            if (eh == MH_OK && oRenderLevel) {
-                LOG_INFO("world-render hook installed @ " + std::to_string(renderLevelAddr), "GameHooks");
-            } else {
-                LOG_ERROR("FAILED to enable world-render hook (MH_EnableHook=" + std::to_string((int)eh) +
-                          ", oRenderLevel=" + std::to_string(reinterpret_cast<uintptr_t>(oRenderLevel)) + ")", "GameHooks");
-                // Clear the trampoline so the detour bails out instead of
-                // calling through a null function pointer.
-                oRenderLevel = nullptr;
-            }
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(renderLevelAddr),
+                               &hkLevelRenderer_renderLevel,
+                               reinterpret_cast<LPVOID*>(&oRenderLevel))
+            && oRenderLevel) {
+            LOG_INFO("world-render hook installed @ " + std::to_string(renderLevelAddr), "GameHooks");
         } else {
-            LOG_ERROR("FAILED to create world-render hook (MH_CreateHook=" + std::to_string((int)ch) +
-                      " @ " + std::to_string(renderLevelAddr) + ")", "GameHooks");
+            LOG_ERROR("FAILED to install world-render hook @ " +
+                      std::to_string(renderLevelAddr) +
+                      ", oRenderLevel=" + std::to_string(reinterpret_cast<uintptr_t>(oRenderLevel)) + ")", "GameHooks");
+            // Clear the trampoline so the detour bails out instead of
+            // calling through a null function pointer.
             oRenderLevel = nullptr;
         }
     } else {
@@ -271,10 +247,9 @@ void InstallRenderLevelHook() {
 void InstallNametagHook() {
     uintptr_t nametagActorAddr = SigManager::GetInstance().Nametag_buildForActor;
     if (nametagActorAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(nametagActorAddr),
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(nametagActorAddr),
                           &hkNametagBuildForActor,
-                          reinterpret_cast<LPVOID*>(&oNametagBuildForActor)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(nametagActorAddr));
+                          reinterpret_cast<LPVOID*>(&oNametagBuildForActor))) {
             LOG_INFO("NameTag_buildForActor hooked (NameTags can hide the original tag)", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook NameTag_buildForActor", "GameHooks");
@@ -287,9 +262,8 @@ void InstallNametagHook() {
 void InstallAttackHook() {
     uintptr_t attackAddr = SigManager::GetInstance().Actor_attack;
     if (attackAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(attackAddr), &hkActorAttack,
-                          reinterpret_cast<LPVOID*>(&oActorAttack)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(attackAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(attackAddr), &hkActorAttack,
+                          reinterpret_cast<LPVOID*>(&oActorAttack))) {
             LOG_INFO("Actor::attack hooked (combat hit signal)", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook Actor::attack", "GameHooks");
@@ -303,9 +277,8 @@ void InstallAttackHook() {
 void InstallSlowdownHook() {
     uintptr_t slowdownAddr = SigManager::GetInstance().ItemUseSlowdownApply;
     if (slowdownAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(slowdownAddr), &hkItemUseSlowdown,
-                          reinterpret_cast<LPVOID*>(&oItemUseSlowdown)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(slowdownAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(slowdownAddr), &hkItemUseSlowdown,
+                          reinterpret_cast<LPVOID*>(&oItemUseSlowdown))) {
             LOG_INFO("ItemUseSlowdownApply hooked (NoSlow available)", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook ItemUseSlowdownApply", "GameHooks");

@@ -85,10 +85,6 @@ void TrueSight::OnTick() {
 }
 
 void TrueSight::OnDisable() {
-    // Restore EVERY actor we cleared: re-raise the flags on the live actors
-    // whose unique ID is in the cleared set. Actors that despawned in the
-    // meantime need nothing (the server re-syncs them); the set dies with the
-    // restore so a fresh enable starts from scratch.
     SDK::Level* level = nullptr; SDK::Actor* lp = nullptr;
     if (tsResolve(&level, &lp)) {
         std::vector<SDK::Actor*> actors;

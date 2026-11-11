@@ -18,10 +18,6 @@
 // ---------------------------------------------------------------------------
 namespace {
 
-// Pending-queue ceiling. The old Rise EvictingList(5) FORCED a cap of 5 even
-// with the Nova limit off (extras were silently dropped, which read as "the
-// limit never goes away"). Now the queue is wide enough that the on-screen
-// STACK is the only real gate, and that gate is exactly the Nova Limit.
 constexpr size_t kMaxPending = 32;
 
 struct ActiveCard {
@@ -36,11 +32,6 @@ struct ActiveCard {
     float slotY = -100000.f; // Nova: smoothed stack-slot Y (spring glides)
 };
 
-// The TargetHUD-style example card: while an editor surface (pause, chat,
-// OUR custom chat menu) is open with nothing to show, the placeholder pops
-// in with the entry zoom, HOLDS for as long as the surface is open, and only
-// ~1s after it closes plays the exit animation (rise + fade) — the exact
-// linger TargetHUD's menuHold uses. No cyclic pop/hold/fade repeat.
 struct ExampleCard {
     enum class State { Hidden, In, Hold, Out };
     State state = State::Hidden;
@@ -126,10 +117,6 @@ void Notifications::OnRender() {
         else if (s->mName == "Nova Limit")      novaLimit   = static_cast<BoolSetting*>(s)->mValue;
         else if (s->mName == "Nova Max")        novaMax     = static_cast<NumberSetting*>(s)->mValue;
     }
-    // Nova stack cap: with "Nova Limit" OFF there is NO cap at all — the
-    // stack grows as far as the pending-queue ceiling allows (kMaxPending),
-    // so turning the limit off genuinely removes it. With it ON, the
-    // on-screen stack clamps to the configured maximum.
     const size_t stackCap = (style == 1 && novaLimit)
         ? (size_t)std::clamp(novaMax, 1.0f, 10.0f) : kMaxPending;
 
@@ -176,9 +163,6 @@ void Notifications::OnRender() {
     }
 
     const std::string& screenName = SDK::ScreenView::currentScreenName();
-    // The example card shows on EVERY editor surface: the pause and (vanilla)
-    // chat screens, plus OUR custom chat menu (which keeps the hud_screen but
-    // opens a UI surface).
     const bool menuSurface = (screenName == "pause_screen" || screenName == "chat_screen" ||
                               (screenName == "hud_screen" && ::Chat::IsOpen()));
 
@@ -258,11 +242,6 @@ void Notifications::OnRender() {
         // Square silhouette: Nova draws with ZERO rounding everywhere.
         constexpr float round = 0.0f;
 
-        // Frosted backdrop: blur + dim paint OPAQUE rects onto the backbuffer
-        // at replay time, so they go on the BACKGROUND list, which is replayed
-        // before the foreground plates (the same ordering rule Stead and
-        // TargetHUD follow). Skipped while the ClickGUI already blurs the
-        // whole screen.
         bool guiOpen = false;
         if (Module* gui = ModuleManager::GetInstance().GetModuleByName("ClickGUI"))
             guiOpen = gui->IsEnabled();
@@ -305,10 +284,6 @@ void Notifications::OnRender() {
             return std::max(150.0f * scale, std::max(tw, dw) + padX * 2.0f);
         };
 
-        // Draws one card. `offRight` slides the card right toward/past the
-        // screen edge during slides; `scl` scales the whole card around its
-        // own center (entry pop / exit shrink); `a` is the global alpha;
-        // `remain` (0..1) drives the countdown strip's width.
         auto drawNovaCard = [&](float right, float bottom, float width, float hgt,
                                 NotifType type, const std::string& title,
                                 const std::string& desc,
@@ -332,9 +307,6 @@ void Notifications::OnRender() {
             ImRenderUtils::fillRectangle(r, ImColor(14, 14, 18, (int)(120.f * a)),
                                          1.0f, round, dl);
 
-            // Top line = title in the live theme colour. Second line = the
-            // grey note, or (toggles) the module name in white with the
-            // green/red status word after it.
             const ImColor themed = ColorUtils::getThemedColor(0.0f, now);
             const ImVec2 cyPt = t2(ImVec2(cxc, cyc));
             const float tx = t2(ImVec2(rx + padX, cyc)).x;
@@ -361,9 +333,6 @@ void Notifications::OnRender() {
                 }
             }
 
-            // Countdown strip: a theme gradient along the bottom edge whose
-            // width tracks the card's remaining life, with a soft themed glow
-            // (a vertical fade of the same gradient) rising above it.
             const float remainC = std::clamp(remain, 0.0f, 1.0f);
             if (remainC > 0.004f) {
                 const float barH = std::max(2.5f * scale, 1.5f);
@@ -432,10 +401,6 @@ void Notifications::OnRender() {
             return;
         }
 
-        // ---- the stack: newest card at the BOTTOM of a bottom-right stack.
-        //      Each card keeps a SMOOTHED slot Y (a spring lerp toward its
-        //      target), so a new arrival glides the older cards up smoothly
-        //      instead of popping them into their new slots. ----
         float dt = ImGui::GetIO().DeltaTime;
         if (dt <= 0.0f) dt = 1.0f / 60.0f;
         const float yLerp = 1.0f - std::exp(-dt * 16.0f);
@@ -515,10 +480,6 @@ void Notifications::OnRender() {
 
     ImVec2 screen = ImRenderUtils::getScreenSize();
 
-    // HUD-editor position; default = the band anchor. "Unset" is the (0,0)
-    // sentinel OR the stock Module default (10,10) — configs saved the stock
-    // default verbatim before the ctor sentinel existed, and both meant
-    // "never positioned", spawning the card ON the Watermark.
     const bool unsetPos = (mPosX <= 0.f && mPosY <= 0.f) ||
                           (mPosX == 10.f && mPosY == 10.f);
     if (unsetPos) {
@@ -527,10 +488,6 @@ void Notifications::OnRender() {
     }
     const float x = mPosX, y = mPosY;
 
-    // Backdrop helper: per-card frosted backdrop (blur + dim) on the
-    // BACKGROUND list — an opaque replay must precede the foreground plates
-    // (the same ordering rule TargetHUD follows). Skipped while the ClickGUI
-    // already blurs the whole screen.
     const float cardRound = roundingSet * scale;
     bool guiOpen = false;
     if (Module* gui = ModuleManager::GetInstance().GetModuleByName("ClickGUI"))
@@ -579,10 +536,6 @@ void Notifications::OnRender() {
         return;
     }
 
-    // ---- the stack: newest card at the BOTTOM, older ones pushed UP (the
-    // Rise behaviour — a new notification enters at the fixed bottom anchor
-    // and the previous ones move up). active[] is oldest-first; drawing goes
-    // newest-first so each card's Y is computed from the stack bottom.
     const size_t n = active.size();
     const float stackH = (float)n * height + (float)(n > 0 ? n - 1 : 0) * gap;
     const float bottomY = y + stackH - height;   // newest card's top edge
@@ -592,9 +545,6 @@ void Notifications::OnRender() {
         const size_t i = n - 1 - ii;            // newest (last) first
         ActiveCard& card = active[i];
         const float curY = bottomY - (float)ii * (height + gap);
-        // Toggle senders pass just the module NAME (Nova's two-line format
-        // derives the status from the type); Stead keeps its classic single
-        // "Name Enabled/Disabled" title, so the suffix is rebuilt here.
         std::string title = card.title;
         if (card.type == NotifType::ToggleOn) title += " Enabled";
         else if (card.type == NotifType::ToggleOff) title += " Disabled";
@@ -630,9 +580,6 @@ void Notifications::OnRender() {
                         ImColor(255, 255, 255, borderA), cardRound, 0, 1.0f);
         }
 
-        // Icon tile: white rounded square; the mark depends on the kind —
-        // ToggleOn = check, ToggleOff = cross, everything else = the themed
-        // placeholder square.
         const float iconX = rect.x + spacer, iconY = rect.y + spacer;
         ImRenderUtils::fillRectangle(ImVec4(iconX, iconY, iconX + iconSide, iconY + iconSide),
                                      ImColor(255, 255, 255, (int)(235.f * cardAlpha)),

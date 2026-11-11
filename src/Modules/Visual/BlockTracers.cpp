@@ -10,10 +10,6 @@
 #include <string>
 #include <Windows.h>
 
-// BlockTracers = BlockESP's block scan (radius / blocks-per-tick trigger + the
-// same active-block selection) feeding Tracers-style lines. The scan half is a
-// direct port of BlockESP::OnTick so the two modules track identical block sets;
-// the render half draws one anchored line per found block instead of a box.
 
 namespace {
 
@@ -41,7 +37,6 @@ static bool contains(const std::string& s, const char* needle) {
     return s.find(needle) != std::string::npos;
 }
 
-// Identical classification to BlockESP (name-first, numeric-id fallback).
 static int classifyLegacy(SDK::BlockLegacy* legacy) {
     if (!legacy) return BK_None;
     std::string n = lowerCopy(legacy->getName());
@@ -54,8 +49,6 @@ static int classifyLegacy(SDK::BlockLegacy* legacy) {
         if (contains(n, "coal_ore")) return BK_Coal;
         if (contains(n, "redstone_ore")) return BK_Redstone;
         if (contains(n, "lapis_ore")) return BK_Lapis;
-        // Ancient debris ("ancient_debris"). Match the bare word too so neither
-        // namespace prefixes nor future renames break the check.
         if (contains(n, "ancient_debris") || contains(n, "debris")) return BK_Debris;
         if (contains(n, "portal")) return BK_Portal;
         if (contains(n, "chest") || contains(n, "barrel")) return BK_Chest;
@@ -79,8 +72,6 @@ static int classifyLegacy(SDK::BlockLegacy* legacy) {
     return BK_None;
 }
 
-// Maps a BlockKind to its selection toggle. Setting indices here match the
-// BlockTracers header ([6..15]) -- the ONLY difference from BlockESP's helper.
 static bool kindEnabled(const BlockTracers* self, int kind) {
     switch (kind) {
         case BK_Diamond:  return static_cast<BoolSetting*>(self->mSettings[6])->mValue;
@@ -125,9 +116,6 @@ static bool exposedToAir(SDK::BlockSource* src, const SDK::BlockPos& p) {
     return false;
 }
 
-// mat4Mul / worldToScreen are consolidated in SDK/Math.h (mat4Multiply,
-// worldToScreen; both global, resolved via ADL).
-
 static bool readActorPos(SDK::Actor* actor, Vec3* out) {
     if (!actor || !out) return false;
     __try {
@@ -144,8 +132,6 @@ void BlockTracers::resetScan(const SDK::BlockPos& center, int radius) {
     mCenter = center;
     mRadius = radius;
     mCursor = 0;
-    // Keep mFoundBlocks intact until the new pass completes (no flicker on
-    // recenter), just like BlockESP.
     mScanBuffer.clear();
     mLegacyKindCache.clear();
 }
@@ -193,12 +179,8 @@ void BlockTracers::OnTick() {
     bool onlyExposed = static_cast<BoolSetting*>(mSettings[16])->mValue;
     int r2 = radius * radius;
 
-    // Progressive, double-buffered scan (identical to BlockESP): accumulate the
-    // current pass into mScanBuffer (no lock), then swap into mFoundBlocks under
-    // the lock only when a full pass completes -> render always sees a complete
-    // set, never a half-refilled one.
     for (int i = 0; i < budget && total > 0; ++i) {
-        if (mCursor == 0) mScanBuffer.clear();   // begin a fresh pass
+        if (mCursor == 0) mScanBuffer.clear();
         int cur = mCursor++;
         bool passDone = (mCursor >= total);
 
@@ -239,7 +221,6 @@ void BlockTracers::OnTick() {
 
 void BlockTracers::OnRender() {
     if (!IsEnabled()) return;
-    // "Always show" off (default) -> only render on the in-world HUD screen.
     if (!static_cast<BoolSetting*>(mSettings[17])->mValue &&
         SDK::ScreenView::currentScreenName() != "hud_screen") return;
 
@@ -254,19 +235,17 @@ void BlockTracers::OnRender() {
     SDK::ClientInstance* ci = SDK::ClientInstance::get();
     if (!ci || !sdk_safe_ptr(ci, 0x200)) return;
 
-    // Camera MVP via the shared delayed-transform acquisition (FrameView.h).
     float mvp[16];
     Vec3 origin(0, 0, 0);
     if (!acquireCameraMVP(ci, mvp, origin)) return;
 
-    // Draw once per frame (OnRender can be invoked more than once per frame).
     int frame = ImGui::GetFrameCount();
     static int s_drawnFrame = -1;
     if (s_drawnFrame == frame) return;
     s_drawnFrame = frame;
 
-    int   anchor    = static_cast<EnumSetting*>(mSettings[0])->mValue;   // 0 top,1 center,2 bottom
-    int   colMode   = static_cast<EnumSetting*>(mSettings[1])->mValue;   // 0 block,1 theme,2 custom
+    int   anchor    = static_cast<EnumSetting*>(mSettings[0])->mValue;
+    int   colMode   = static_cast<EnumSetting*>(mSettings[1])->mValue;
     float* ccol     = static_cast<ColorSetting*>(mSettings[2])->mValue;
     float thickness = static_cast<NumberSetting*>(mSettings[3])->mValue;
     uint64_t nowMs  = GetTickCount64();
@@ -277,21 +256,19 @@ void BlockTracers::OnRender() {
                 anchor == 0 ? 0.0f : (anchor == 1 ? screen.y * 0.5f : screen.y));
 
     for (const FoundBlock& fb : blocks) {
-        // Line endpoint = the block's centre in world space.
         Vec3 center((float)fb.pos.x + 0.5f, (float)fb.pos.y + 0.5f, (float)fb.pos.z + 0.5f);
         ImVec2 to;
-        if (!worldToScreen(center, mvp, origin, screen, &to)) continue;  // skip behind camera
+        if (!worldToScreen(center, mvp, origin, screen, &to)) continue;
 
         ImU32 color;
         if (colMode == 0) {
-            color = fb.color;                                            // per-block ore colour
+            color = fb.color;
         } else if (colMode == 1) {
-            color = (ImU32)ColorUtils::getThemedColor(0.0f, nowMs);      // themed
+            color = (ImU32)ColorUtils::getThemedColor(0.0f, nowMs);
         } else {
-            color = ImGui::ColorConvertFloat4ToU32(ImVec4(ccol[0], ccol[1], ccol[2], ccol[3])); // custom
+            color = ImGui::ColorConvertFloat4ToU32(ImVec4(ccol[0], ccol[1], ccol[2], ccol[3]));
         }
 
-        // Dark underlay + coloured line for legibility (matches BlockESP style).
         dl->AddLine(from, to, ImColor(0, 0, 0, 160), thickness + 1.5f);
         dl->AddLine(from, to, color, thickness);
     }

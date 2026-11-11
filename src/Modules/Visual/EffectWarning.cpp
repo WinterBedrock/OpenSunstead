@@ -11,12 +11,10 @@
 
 EffectWarning::EffectWarning()
     : Module("EffectWarning", "Warn when a status effect is about to expire", Category::Visual, 0) {
-    // Seconds remaining at/below which we fire a warning.
     AddSetting(new NumberSetting("Seconds", "Warn this many seconds before expiry", 5.0f, 1.0f, 30.0f, 0.5f));
     AddSetting(new BoolSetting("Only Beneficial", "Ignore harmful effects (poison, wither, ...)", true));
     AddSetting(new BoolSetting("Notification", "Show a toast notification", true));
     AddSetting(new BoolSetting("Chat", "Also print to client chat", false));
-    // Minimum gap between warnings for the same effect id (after refresh / re-apply).
     AddSetting(new NumberSetting("Cooldown", "Min seconds between warnings for the same effect", 3.0f, 0.5f, 30.0f, 0.5f));
     canBind = true;
 }
@@ -99,7 +97,6 @@ void EffectWarning::OnTick() {
     const bool chat = GetNotifyChat();
     if (!toast && !chat) return;
 
-    // Track which effects are still active so we can clear warn state when they drop.
     std::unordered_set<uint32_t> active;
     active.reserve(effects.size());
 
@@ -108,12 +105,10 @@ void EffectWarning::OnTick() {
         active.insert(e.id);
 
         if (e.infinite || e.durationTicks <= 0) {
-            // Refreshed to infinite / permanent — allow a new warn later if it becomes finite.
             mWarnedThisWindow.erase(e.id);
             continue;
         }
 
-        // Still far from expiry — clear one-shot flag so a later re-entry can warn again.
         if (e.durationTicks > warnTicks) {
             mWarnedThisWindow.erase(e.id);
             continue;
@@ -144,7 +139,6 @@ void EffectWarning::OnTick() {
         mWarnedThisWindow.insert(e.id);
     }
 
-    // Drop warn state for effects that are no longer on the player.
     for (auto it = mWarnedThisWindow.begin(); it != mWarnedThisWindow.end(); ) {
         if (!active.count(*it)) it = mWarnedThisWindow.erase(it);
         else ++it;

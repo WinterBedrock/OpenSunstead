@@ -1,7 +1,4 @@
 #pragma once
-// Sunstead SDK — Minecraft Bedrock 1.26.x (master include).
-// Layout: Types.h / Math.h / SDKRuntime.*, plus Actor/, Client/, Inventory/,
-// World/ and Network/ subdirectories.
 
 #include "Types.h"
 #include "Actor/Actor.h"
@@ -25,8 +22,6 @@
 #include "Runtime/Guard.h"
 
 namespace SDK {
-    // Declared in InventoryAccess.h; defined here because it needs the complete
-    // PacketUtils (which itself needs Actor + Inventory).
     namespace Inv {
         inline bool setSelectedSlot(Actor* lp, int slot) {
             if (!lp || slot < 0 || slot > 8) return false;
@@ -34,8 +29,6 @@ namespace SDK {
         }
     }
 
-
-    // Strip § color codes and take first line (nametag often has "\nrank").
     inline std::string stripNameFormatting(std::string s){
         std::string out; out.reserve(s.size());
         for(size_t i=0;i<s.size();++i){
@@ -64,7 +57,6 @@ namespace SDK {
                         if(sdk_safe_string(&e.name,n)&&!n.empty()) return stripNameFormatting(n);
                     }
                 }
-                // Fallback: match stripped display name to a list entry (case-insensitive).
                 std::string disp=stripNameFormatting(getDisplayName());
                 if(!disp.empty()){
                     for(auto& kv:*list){
@@ -86,36 +78,14 @@ namespace SDK {
         auto*s=*sb;return(sdk_safe_ptr(s,sizeof(SerializedSkinBase))&&s->Impl)?&s->Impl->Object:nullptr;
     }
     inline ContainerManagerModel* Actor::getContainerManagerModel(){
-        // Primary first: verified 0x5A0 from setContainerManagerModel.
-        static const int kOffs[] = {
-            0x5A0, 0x598, 0x5A8, 0x590, 0x5B0,
-            0x750, 0x748, 0x758, 0x740, 0x760, 0x700
-        };
-        static int s_off = -1;
-        auto load = [&](int off)->ContainerManagerModel*{
-            if(off<0||!sdk_safe_ptr(this,(size_t)off+sizeof(void*))) return nullptr;
-            void* raw=*(void**)((uintptr_t)this+(size_t)off);
-            if(!raw||!sdk_safe_ptr(raw,0x60)) return nullptr;
-            void** vt=*(void***)raw;
-            if(!vt||!sdk_safe_ptr(vt,sizeof(void*)*12)) return nullptr;
-            return reinterpret_cast<ContainerManagerModel*>(raw);
-        };
-        if(s_off>=0){
-            auto* c=load(s_off);
-            if(c) return c;
-            s_off=-1;
-        }
-        for(int off:kOffs){
-            auto* cmm=load(off);
-            if(!cmm) continue;
-            // Prefer getSlot(0) success, but accept IDA-verified 0x5A0 even when
-            // the chest is empty / getSlot returns null (still a live CMM).
-            ItemStack* s=cmm->getSlot(0);
-            if(s && sdk_safe_ptr(s,0x80)){ s_off=off; return cmm; }
-            if(s){ s_off=off; return cmm; }
-            if(off==0x5A0){ s_off=off; return cmm; }
-        }
-        return nullptr;
+        constexpr uintptr_t offset = 0x5A0;
+        if(!sdk_safe_ptr(this,offset+sizeof(void*))) return nullptr;
+        auto* model=*reinterpret_cast<ContainerManagerModel**>(
+            reinterpret_cast<uintptr_t>(this)+offset);
+        if(!sdk_safe_ptr(model,0x60)) return nullptr;
+        void** vt=*reinterpret_cast<void***>(model);
+        if(!sdk_safe_ptr(vt,sizeof(void*)*12)) return nullptr;
+        return model;
     }
     inline PlayerInventory* Actor::getSupplies(){
         constexpr uintptr_t kSupplies = ::Layout::Actor::Supplies;

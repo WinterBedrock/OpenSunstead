@@ -7,10 +7,6 @@
 namespace baritone {
 namespace {
 
-// Block classification tables. Substrings because Bedrock names are versioned
-// and prefixed inconsistently (tall_grass / short_grass / legacy grass).
-// kSolidExceptions is checked FIRST: grass_block contains "grass" and must
-// stay solid or every cell in the world stops being standable.
 const char* const kSolidExceptions[] = {
     "grass_block", "grass_path", "dirt_with_roots", "mushroom_block",
     "mushroom_stem", "dried_kelp_block", "end_portal_frame", "flowering_azalea",

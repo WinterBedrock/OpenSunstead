@@ -3,90 +3,114 @@
 #include "../ModuleManager.h"
 #include "../Misc/AntiBot.h"
 
-static bool sehExpandAabb(AABBShapeComponent* aabbs, float w, float h) {
-    if (!sdk_safe_ptr(aabbs, sizeof(AABBShapeComponent))) return false;
-    __try {
-        float cx = (aabbs->mMin.x + aabbs->mMax.x) * 0.5f;
-        float cz = (aabbs->mMin.z + aabbs->mMax.z) * 0.5f;
-        float feetY = aabbs->mMin.y;
-        float hw = w * 0.5f;
-        aabbs->mMin.x = cx - hw; aabbs->mMin.z = cz - hw;
-        aabbs->mMax.x = cx + hw; aabbs->mMax.z = cz + hw;
-        aabbs->mMax.y = feetY + h;
-        aabbs->width = w; aabbs->height = h;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
+#include <unordered_set>
+#include <vector>
 
-// SEH-guarded getAabbs — the Actor+0x220 component-pointer deref is the one
-// per-actor engine read. Validated + guarded so a bad actor can't throw.
-// AABBShapeComponent lives in the global namespace (Types.h), so no SDK:: prefix.
-static AABBShapeComponent* sehGetAabbs(SDK::Actor* actor) {
-    if (!actor || !sdk_safe_ptr(actor, 0x228)) return nullptr;
+namespace {
+
+AABBShapeComponent* getAabb(SDK::Actor* actor) {
+    if (!actor || !sdk_safe_ptr(actor, Offsets().Actor_mAABB + sizeof(void*))) return nullptr;
     __try { return actor->getAabbs(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
-// Apply (w,h) to every actor matching the target filter's AABB width/height.
-// SEH-wrapped per actor; returns the count of actors actually written. This is
-// the only place engine component memory is touched.
-static int applyHitbox(SDK::Level* level, SDK::Actor* lp, float w, float h, int targetMode) {
-    int processed = 0;
-    std::vector<SDK::Actor*> actors;
-    if (!sehGetActorList(level, &actors)) return 0;
+void restoreAabb(SDK::Actor* actor, const AABBShapeComponent& original) {
+    if (!actor || !sdk_safe_ptr(actor, Offsets().Actor_mAABB + sizeof(void*))) return;
+    auto* aabb = getAabb(actor);
+    if (!aabb) return;
+    __try { *aabb = original; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
 
-    AntiBot* antiBot = (targetMode == 2)
-        ? static_cast<AntiBot*>(ModuleManager::GetInstance().GetModuleByName("AntiBot"))
-        : nullptr;
+void expandAabb(AABBShapeComponent* aabb, float width, float height) {
+    if (!sdk_safe_ptr(aabb, sizeof(AABBShapeComponent))) return;
+    __try {
+        const float centerX = (aabb->mMin.x + aabb->mMax.x) * 0.5f;
+        const float centerZ = (aabb->mMin.z + aabb->mMax.z) * 0.5f;
+        aabb->mMin.x = centerX - width * 0.5f;
+        aabb->mMax.x = centerX + width * 0.5f;
+        aabb->mMin.z = centerZ - width * 0.5f;
+        aabb->mMax.z = centerZ + width * 0.5f;
+        aabb->mMax.y = aabb->mMin.y + height;
+        aabb->width = width;
+        aabb->height = height;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
 
-    for (auto* actor : actors) {
-        if (!actor || actor == lp) continue;
-        if (targetMode >= 1 && !sehIsPlayer(actor)) continue;   // players-only modes
-        if (targetMode == 2 && antiBot && antiBot->IsBot(actor)) continue;
-        auto* aabbs = sehGetAabbs(actor);
-        if (!aabbs) continue;
-        if (sehExpandAabb(aabbs, w, h))
-            ++processed;
-    }
-    return processed;
 }
 
 HitBoxes::HitBoxes() : Module("HitBoxes", "Expands hitboxes", Category::Combat) {
     AddSetting(new EnumSetting("Targets", "Whose hitboxes to modify", 0,
-        { "All Entities", "Players Only", "Players + AntiBot" }));                       // [0]
-    widthSetting = new NumberSetting("Width", "Expanded hitbox width", 2.0f, 0.6f, 5.0f, 0.1f);   // [1]
-    heightSetting = new NumberSetting("Height", "Expanded hitbox height", 2.0f, 1.8f, 5.0f, 0.1f); // [2]
+        { "All Entities", "Players Only", "Players + AntiBot" }));
+    widthSetting = new NumberSetting("Width", "Expanded hitbox width", 2.0f, 0.6f, 5.0f, 0.1f);
+    heightSetting = new NumberSetting("Height", "Expanded hitbox height", 2.0f, 1.8f, 5.0f, 0.1f);
     AddSetting(widthSetting);
     AddSetting(heightSetting);
 }
 
-void HitBoxes::OnDisable() {
-    // Restore each target's ORIGINAL base size. With "All Entities" enabled
-    // the module wrote non-player boxes too, so the restore must run with the
-    // same filter to touch the same set of actors. Snapshot the local
-    // player's size as the vanilla reference (all players share it in the
-    // common case; mobs get their engine-recomputed size back on their next
-    // physics tick regardless).
-    SDK::ClientInstance* ci = nullptr;
-    SDK::Level* level = nullptr;
-    SDK::Actor* lp = nullptr;
-    if (!SDK::resolveContext(&ci, &level, &lp)) return;
+void HitBoxes::OnTick() {
+    SDK::GameContext context;
+    if (!SDK::resolveContext(context)) {
+        trackedLevel = nullptr;
+        originalBoxes.clear();
+        return;
+    }
+    if (trackedLevel != context.level) {
+        trackedLevel = context.level;
+        originalBoxes.clear();
+    }
 
-    auto* lpAabbs = sehGetAabbs(lp);
-    if (!lpAabbs) return;
+    std::vector<SDK::Actor*> actors;
+    if (!SDK::sehGetActorList(context.level, &actors)) return;
 
-    applyHitbox(level, lp, lpAabbs->width, lpAabbs->height, GetTargetMode());
+    std::unordered_set<SDK::Actor*> present;
+    present.reserve(actors.size());
+    for (SDK::Actor* actor : actors)
+        if (actor && sdk_safe_ptr(actor, Offsets().Actor_mAABB + sizeof(void*))) present.insert(actor);
+
+    for (auto it = originalBoxes.begin(); it != originalBoxes.end();) {
+        if (!present.contains(it->first)) it = originalBoxes.erase(it);
+        else ++it;
+    }
+
+    auto* antiBot = static_cast<AntiBot*>(ModuleManager::GetInstance().GetModuleByName("AntiBot"));
+    const int targets = GetTargetMode();
+    for (SDK::Actor* actor : present) {
+        if (actor == context.lp) continue;
+        const bool selected = targets == 0 || (SDK::sehIsPlayer(actor) &&
+            (targets != 2 || !antiBot || !antiBot->IsBot(actor)));
+
+        auto* aabb = getAabb(actor);
+        if (!aabb) continue;
+        auto original = originalBoxes.find(actor);
+        if (!selected) {
+            if (original != originalBoxes.end()) {
+                restoreAabb(actor, original->second);
+                originalBoxes.erase(original);
+            }
+            continue;
+        }
+        if (original == originalBoxes.end())
+            original = originalBoxes.emplace(actor, *aabb).first;
+        expandAabb(aabb, widthSetting->mValue, heightSetting->mValue);
+    }
 }
 
-void HitBoxes::OnTick() {
-    if (!IsEnabled()) return;
+void HitBoxes::OnDisable() {
+    SDK::GameContext context;
+    if (!SDK::resolveContext(context)) {
+        originalBoxes.clear();
+        trackedLevel = nullptr;
+        return;
+    }
 
-    SDK::ClientInstance* ci = nullptr;
-    SDK::Level* level = nullptr;
-    SDK::Actor* lp = nullptr;
-    if (!SDK::resolveContext(&ci, &level, &lp)) return;
-
-    float w = widthSetting->mValue;
-    float h = heightSetting->mValue;
-    applyHitbox(level, lp, w, h, GetTargetMode());
+    std::vector<SDK::Actor*> actors;
+    if (SDK::sehGetActorList(context.level, &actors)) {
+        for (SDK::Actor* actor : actors) {
+            const auto it = originalBoxes.find(actor);
+            if (it != originalBoxes.end()) restoreAabb(actor, it->second);
+        }
+    }
+    originalBoxes.clear();
+    trackedLevel = nullptr;
 }

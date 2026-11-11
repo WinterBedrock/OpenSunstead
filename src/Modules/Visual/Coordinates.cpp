@@ -7,17 +7,6 @@
 #include <string>
 #include <cstdio>
 
-// Latite-style coordinate fetch: read the local player's position directly via
-// ClientInstance::getLocalPlayer() (vtable[0x1F], verified) -> Actor::getPos()
-// (StateVectorComponent, fetched through entt with SEH guards in Actor.h).
-//
-// The previous code tried ClientInstance::getLevelRendererPlayer() via vtable
-// index 187, which is version-specific and dereferenced a garbage pointer on
-// world entry → crash. getLocalPlayer()->getPos() is the same path Latite's
-// CustomCoordinates module uses, and it is already known-good (the WndProc
-// handler calls getLocalPlayer() every keypress without crashing).
-//
-// Returns true and fills `out` on success.
 static bool getCoordinatesSafe(float out[3]) {
     out[0] = out[1] = out[2] = 0.0f;
 
@@ -30,7 +19,7 @@ static bool getCoordinatesSafe(float out[3]) {
 
         Vec3 pos = lp->getPos();
         out[0] = pos.x;
-        out[1] = pos.y - 1.62f; // eye offset, same as Latite CustomCoordinates
+        out[1] = pos.y - 1.62f;
         out[2] = pos.z;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -40,10 +29,8 @@ static bool getCoordinatesSafe(float out[3]) {
 
 void Coordinates::OnRender() {
     if (!IsEnabled()) return;
-    // Also visible while the HUD editor is open (it runs on the pause/chat screens).
     if (!HudEditor::HudVisible()) return;
 
-    // Decimals setting: 0 -> "13" (rounded), 2 -> "12.80", 3 -> "12.803".
     const int decimals = std::clamp((int)static_cast<NumberSetting*>(mSettings[8])->mValue, 0, 3);
 
     std::string value = "0 0 0";

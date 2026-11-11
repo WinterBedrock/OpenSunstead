@@ -2,8 +2,6 @@
 #include "../Module.h"
 #include "CounterStyle.h"
 
-// BPS — HUD counter that shows the local player's horizontal speed in
-// blocks-per-second (like an FPS counter, but for movement speed).
 class BPS : public Module {
 public:
     BPS() : Module("BPS", "Displays your horizontal speed in blocks per second", Category::Visual, 0) {

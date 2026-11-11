@@ -25,14 +25,6 @@ namespace {
 // up this soon after firing, give up on that target and move on.
 constexpr uint64_t kAwaitScreenTimeoutMs = 900;
 
-// Faces to try, in the order a player would reach one. `face` is the Bedrock
-// face id of the container side we click; the vector is the offset from the
-// container to the neighbour block on that side (the side is reachable only
-// when that neighbour is non-solid). The server validates the transaction
-// against BOTH the click face and the HitResult, so the face id MUST match its
-// offset or the open is silently refused — which is the exact bug that made the
-// module do nothing. Bedrock face ids: 0=down(-Y) 1=up(+Y) 2=north(-Z)
-// 3=south(+Z) 4=west(-X) 5=east(+X) (matches Scaffold::sehGetBlockPlaceFace).
 struct FaceProbe {
     int face;
     int dx, dy, dz;
@@ -46,10 +38,6 @@ constexpr FaceProbe kFaces[] = {
     { 0,  0, -1,  0 }, // down  (-Y)
 };
 
-// Point on the clicked face's surface (block-local, 0..1 per axis) so the
-// server's HitResult check agrees with the face id we send. Using the block
-// centre for every face lets the server reject clicks whose hit point does not
-// lie on the named face.
 inline void faceHitPoint(int face, float bx, float by, float bz,
                          float* hx, float* hy, float* hz) {
     *hx = bx + 0.5f; *hy = by + 0.5f; *hz = bz + 0.5f;
@@ -73,9 +61,6 @@ std::string lowerNoNamespace(const std::string& raw) {
     return n;
 }
 
-// Shortest distance from a point to the block's 1x1x1 volume — the same metric
-// OreMiner uses, so the Range setting reads like vanilla reach rather than
-// centre-to-centre distance.
 float distanceToBlock(const Vec3& from, const SDK::BlockPos& pos) {
     const Vec3 lo(static_cast<float>(pos.x), static_cast<float>(pos.y), static_cast<float>(pos.z));
     const Vec3 hi = lo + Vec3(1.f, 1.f, 1.f);
@@ -248,10 +233,6 @@ bool ChestAura::tryOpen(const SDK::GameContext& ctx, const Candidate& target) {
                  static_cast<float>(target.pos.z),
                  &hx, &hy, &hz);
 
-    // The server validates the transaction against its own HitResult view, so
-    // prime it before dispatching (identical to Scaffold's placement path). The
-    // hit point sits on the exact face we send so the reach/visibility check
-    // agrees and the container actually opens.
     GM::prepBlockHit(ctx.level, click, target.face, hx, hy, hz);
     if (!GM::buildBlock(gm, vt, click, static_cast<unsigned char>(target.face)))
         return false;
@@ -297,9 +278,6 @@ void ChestAura::OnUpdate() {
     SDK::GameContext ctx;
     if (!SDK::resolveContext(ctx, true)) return;
 
-    // A container screen being up means the last open landed: record it, hand
-    // the hotbar back, and idle until the player closes the UI. ChestStealer (if
-    // enabled) does the looting from here.
     const std::string& screen = SDK::ScreenView::currentScreenName();
     const bool containerOpen = ChestStealer::IsContainerScreen(screen);
     if (containerOpen) {

@@ -1,13 +1,6 @@
 #pragma once
 #include "../Module.h"
 
-// TriggerBot — automatically attacks the player you are looking at, like
-// Solstice's TriggerBot (which checks the crosshair HitResult for an ENTITY and
-// calls gameMode->attack). This client's HitResult does not expose the hit
-// entity pointer, so we reproduce the same behaviour geometrically: if a player
-// is inside a small angular window around the crosshair (i.e. you are aiming at
-// them) and within reach, we swing + attack via the SAME GameMode vtable[15]
-// attack path Aura uses. APS is randomized between Min/Max like Solstice.
 class TriggerBot : public Module {
 public:
     TriggerBot() : Module("TriggerBot", "Attacks the player you are aiming at", Category::Combat, 0) {

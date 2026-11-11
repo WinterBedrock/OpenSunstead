@@ -26,9 +26,6 @@ static std::string RandomSuffix(int len) {
     return out;
 }
 
-// Min/Max delay sliders only make sense in Random mode; the single Delay slider
-// only makes sense in Static mode. The ClickGUI calls this every frame for the
-// module being displayed, so visibility stays correct with no side effects.
 void Spammer::UpdateSettingsVisibility() {
     auto* typeSet = static_cast<EnumSetting*>(mSettings[1]);
     bool random = (typeSet->mValue == 1);

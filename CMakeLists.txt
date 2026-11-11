@@ -1,5 +1,6 @@
 # Sunstead client build configuration
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.28)
+
 project(Sunstead)
 enable_language(RC)
 
@@ -13,10 +14,15 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# MinHook
-add_subdirectory(ext/minhook)
+# SafetyHook (inline hooking engine, replaces MinHook). Zydis is fetched via
+# CPM at configure time (SAFETYHOOK_FETCH_ZYDIS defaults to ON).
+set(SAFETYHOOK_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(SAFETYHOOK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SAFETYHOOK_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+add_subdirectory(ext/safetyhook)
 
-set(LIBHAT_DISABLE_SSE OFF CACHE BOOL "Disables SSE scanning" FORCE)
+set(LIBHAT_FEATURE_SSE ON CACHE BOOL "" FORCE)
+set(LIBHAT_FEATURE_AVX512 ON CACHE BOOL "" FORCE)
 set(LIBHAT_INSTALL_TARGET OFF CACHE BOOL "" FORCE)
 set(LIBHAT_TESTING OFF CACHE BOOL "" FORCE)
 add_subdirectory(ext/libhat)
@@ -25,7 +31,6 @@ add_subdirectory(ext/libhat)
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ext/imgui)
 add_library(ImGui STATIC
     ${IMGUI_DIR}/imgui.cpp
-    ${IMGUI_DIR}/imgui_demo.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
@@ -50,40 +55,23 @@ add_library(Sunstead SHARED ${SOURCES} ${HEADERS}
     "${CMAKE_SOURCE_DIR}/src/resources.rc"
 )
 
-target_include_directories(Sunstead PRIVATE src ext ext/minhook/include ext/minhook/src ext/kiero ext/imgui)
+target_include_directories(Sunstead PRIVATE src ext ext/safetyhook/include ext/kiero ext/imgui)
+
+target_precompile_headers(Sunstead PRIVATE src/pch.h)
 
 # Add preprocessor definitions needed for ImGui/Windows.
 # SUNSTEAD_DEBUG gates the debug console + Info/Warning logs (see Logger.h);
 # defined explicitly for the Debug config so it never depends on the CRT flavour.
 target_compile_definitions(Sunstead PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN _ITERATOR_DEBUG_LEVEL=0 $<$<CONFIG:Debug>:SUNSTEAD_DEBUG=1>)
 
-# VMProtect SDK markers (see src/Security/VMP.h and tools/VMPROTECT.md).
-# OFF by default: Sunstead.dll then imports VMProtectSDK64.dll (copied next to
-# the output by the post-build step below) and the SUN_VMP_* markers become
-# real VMProtectBegin*/End calls the VMProtect GUI consumes when protecting the
-# final DLL. Turn OFF for a clean build with no VMProtect dependency.
-set(SUNSTEAD_VMP OFF CACHE BOOL "Embed VMProtect SDK markers")
-set(VMP_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ext/vmprotect)
-if(SUNSTEAD_VMP)
-    target_compile_definitions(Sunstead PRIVATE SUNSTEAD_VMP=1)
-    target_include_directories(Sunstead PRIVATE ${VMP_SDK_DIR})
-    # MSVC picks the .lib up through the #pragma comment in VMProtectSDK.h, but
-    # an explicit link keeps non-MSVC generators honest.
-    target_link_libraries(Sunstead PRIVATE ${VMP_SDK_DIR}/VMProtectSDK64.lib)
-    add_custom_command(TARGET Sunstead POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${VMP_SDK_DIR}/VMProtectSDK64.dll $<TARGET_FILE_DIR:Sunstead>
-        COMMENT "Copying VMProtectSDK64.dll next to Sunstead.dll")
-endif()
-
 # Enable SEH with C++ objects (needed for __try/__except around std::string etc.)
 # /utf-8 keeps Russian chat/notification literals valid UTF-8 in the binary.
 target_compile_options(Sunstead PRIVATE /EHa /MP /utf-8)
 
-target_link_options(Sunstead PRIVATE /MAP /MAPINFO:EXPORTS)
+target_link_options(Sunstead PRIVATE /MAP /MAPINFO:EXPORTS $<$<CONFIG:Debug>:/DEBUG:FULL>)
 
 target_link_libraries(Sunstead PRIVATE
-    minhook
+    safetyhook
     ImGui
     Kiero
     libhat

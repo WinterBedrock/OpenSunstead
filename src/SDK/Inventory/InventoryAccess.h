@@ -28,9 +28,6 @@ inline int selectedSlot(Actor* lp) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
 
-// Switch the held slot via PacketUtils::sendHotbarSlot so the SERVER learns
-// about it too — a bare field write leaves the server attributing the next
-// use/attack to the old item. Defined out-of-line in SDK.h.
 bool setSelectedSlot(Actor* lp, int slot);
 
 // ItemStack in an arbitrary container slot (0..8 hotbar, 9..35 main inventory).
@@ -45,9 +42,6 @@ inline ItemStack* itemAt(Actor* lp, int slot) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
-// Lowercased item name for a slot, or empty when the slot is empty / the name
-// could not be resolved. Builds a std::string, so deliberately NOT inside a
-// __try — getItemName() is internally guarded (see ItemStack).
 inline std::string lowerNameAt(Container* c, int slot) {
     if (!c) return {};
     ItemStack* is = c->getItem(slot);

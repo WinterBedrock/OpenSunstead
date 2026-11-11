@@ -3,8 +3,6 @@
 
 namespace SDK {
 
-// Centralised Minecraft Bedrock packet id <-> name table (1.26.30.05).
-// Use from any module, e.g. PacketSender::sendToServer(..., (int)TypePacket::Text).
 enum class TypePacket : int {
     LoginTokens = 1,
     PlayStatus = 2,

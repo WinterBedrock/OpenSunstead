@@ -5,7 +5,7 @@
 #include "../Utils/MiscUtils/ColorUtils.hpp"
 #include "../Modules/ModuleManager.h"
 #include "../Modules/Setting.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 
 #include <Windows.h>
 #include <cstdint>
@@ -26,9 +26,6 @@ bool  g_gatePatched   = false;
 BYTE  g_savedGateByte = 0;
 uintptr_t g_gateByteAddr = 0;
 
-// The codes we answer for, keyed by their trailing letter. The two-byte §
-// prefix is written out as bytes so this file's own text encoding cannot turn it
-// into something else.
 constexpr char kSectionHi = '\xC2';
 constexpr char kSectionLo = '\xA7';
 
@@ -60,9 +57,6 @@ bool readShortString(const void* str, char* out, size_t outCap, size_t* lenOut) 
     }
 }
 
-// The user's §x colour, read by name off the ClickGUI module (which owns the
-// client's appearance settings) so it stays in sync with the picker with no extra
-// plumbing. Falls back to white when the module or setting is absent.
 ImColor customCodeColor() {
     Module* iface = ModuleManager::GetInstance().GetModuleByName("ClickGUI");
     if (iface) {
@@ -82,16 +76,6 @@ const GameColor* resolveCustomColor(ColorCodeHook::Code which) {
     // same thread, and the game lays text out from both the render and UI paths.
     thread_local GameColor col{ 1.f, 1.f, 1.f, 1.f };
 
-    // getThemedColor's `index` is what turns a flat, time-cycling colour into a
-    // spatial GRADIENT along the text: LerpColors / applyGradientStyle shift the
-    // palette by `index`. Passing a fixed 0 makes every run a single colour that
-    // only changes over time.
-    //
-    // The engine resolves a §-code once per coloured run and copies the RGB out,
-    // so for §z we advance a per-call sweep to give consecutive runs distinct
-    // gradient stops, and reset it whenever the millisecond ticks over (a new
-    // layout pass) so the gradient stays anchored instead of drifting away.
-    // §y deliberately skips the sweep to stay a single stable accent.
     thread_local uint64_t s_frameMs = 0;
     thread_local float    s_sweep   = 0.f;
     const uint64_t now = ColorUtils::GetTimeMs();
@@ -103,9 +87,6 @@ const GameColor* resolveCustomColor(ColorCodeHook::Code which) {
     ImColor out(1.f, 1.f, 1.f, 1.f);
     switch (which) {
     case ColorCodeHook::Code::Theme:
-        // Pass `now` as the explicit clock so every stop sampled within one
-        // layout pass shares the same time base (stable gradient), while
-        // frame-to-frame the clock advances and animates it.
         out = ColorUtils::getThemedColor(s_sweep, now);
         s_sweep += 6.0f; // per-run step, matches drawGradientText's stride
         break;
@@ -124,9 +105,6 @@ const GameColor* resolveCustomColor(ColorCodeHook::Code which) {
     return &col;
 }
 
-// Which of our codes (if any) this string is. Split out so the classification —
-// which touches game memory — can be SEH-guarded on its own, away from the
-// std::vector work that resolving a colour needs (MSVC forbids both in one frame).
 int classifyCode(const void* code) {
     char buf[8];
     size_t len = 0;
@@ -140,15 +118,6 @@ int classifyCode(const void* code) {
     }
 }
 
-// Call the original through its trampoline behind an SEH guard.
-//
-// This is not paranoia. The signatures that locate the §-code machinery are
-// version-specific, and a stale one does not fail loudly — it resolves to some
-// OTHER function, which we then hook and call with a std::string* it never
-// expected. That fault lands here, on a game text-layout thread, with no
-// ModuleManager SEH wrapper anywhere above it, so it takes the process down at
-// world join instead of being logged. Returning nullptr on a fault is safe: the
-// caller already treats null as "no colour" and falls back to white.
 const GameColor* callOriginal(const void* code) {
     if (!oGetColorFromCode) return nullptr;
     __try {
@@ -219,43 +188,6 @@ bool verifyGetColorFromCode(uintptr_t fn) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BEHAVIOURAL verification fallback.
-//
-// The byte-scan above depends on the colour table being laid out as raw
-// consecutive floats the matched lea points at. On some minor builds the
-// table moves into a differently-shaped structure and the scan false-NEGATIVES
-// even though the pattern resolved the real function — observed live on
-// 1.26.51.01 ("does NOT reference the vanilla colour table" while §z was
-// obviously resolvable). The behavioural probe is build-independent: call the
-// candidate with two vanilla codes and compare. "§0" must answer black and
-// "§f" must answer white — what the real getColorFromCode returns on every
-// build. A wrong resolution either faults (caught) or answers something else.
-// ---------------------------------------------------------------------------
-const GameColor* sehCallCandidate(uintptr_t fn, const void* code) {
-    __try {
-        return reinterpret_cast<GetColorFromCodeFn>(fn)(code);
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
-}
-
-bool probeCode(uintptr_t fn, const char* a, const char* b, float r, float g, float bl, float al) {
-    std::string code(a, b);   // std::string stays out of any __try frame (C2712)
-    const GameColor* c = sehCallCandidate(fn, &code);
-    if (!c) return false;
-    const auto eq = [](float x, float y) {
-        const float d = x - y;
-        return d < 0.02f && -d < 0.02f;
-    };
-    return eq(c->r, r) && eq(c->g, g) && eq(c->b, bl) && eq(c->a, al);
-}
-
-bool behavesLikeGetColorFromCode(uintptr_t fn) {
-    if (!fn) return false;
-    // "§0" -> black, "§f" -> white. The § is the two UTF-8 bytes C2 A7, written
-    // out so this file's encoding cannot mangle them.
-    return probeCode(fn, "\xC2\xA7" "0", "\xC2\xA7" "0" + 3, 0.f, 0.f, 0.f, 1.f)
-        && probeCode(fn, "\xC2\xA7" "f", "\xC2\xA7" "f" + 3, 1.f, 1.f, 1.f, 1.f);
-}
 
 bool writeGateByte(BYTE value, BYTE* previous) {
     if (!g_gateByteAddr) return false;
@@ -297,30 +229,17 @@ void ColorCodeHook::Initialize() {
         LOG_WARN("TextProcessor::codeRangeGate not found; custom codes stay inert", "ColorCodeHook");
     }
 
-    // Half two: answer for our codes with a colour we own.
-    //
-    // The address is VERIFIED BY CONTENT before being hooked, not trusted. A
-    // stale pattern silently resolves to a neighbouring function, and the one it
-    // picked on the crashing build takes an out-parameter where we assumed a
-    // std::string — hooking that corrupted the caller's object and killed the
-    // process on world join with no SEH frame anywhere above to catch it.
-    // verifyGetColorFromCode() proves the target really is the colour-code
-    // lookup by finding the vanilla mce::Color table it references.
     if (sigs.TextColor_getColorFromCode &&
-        !verifyGetColorFromCode(sigs.TextColor_getColorFromCode) &&
-        !behavesLikeGetColorFromCode(sigs.TextColor_getColorFromCode)) {
+        !verifyGetColorFromCode(sigs.TextColor_getColorFromCode)) {
         char buf[160];
         std::snprintf(buf, sizeof(buf),
-            "getColorFromCode @0x%llX fails both the colour-table scan and the "
-            "behavioural probe — stale signature, refusing to hook (custom codes "
-            "stay white)",
+            "getColorFromCode @0x%llX rejected; custom colour codes disabled",
             (unsigned long long)sigs.TextColor_getColorFromCode);
         LOG_WARN(buf, "ColorCodeHook");
     } else if (sigs.TextColor_getColorFromCode) {
         auto target = reinterpret_cast<LPVOID>(sigs.TextColor_getColorFromCode);
-        if (MH_CreateHook(target, reinterpret_cast<LPVOID>(&hkGetColorFromCode),
-                          reinterpret_cast<LPVOID*>(&oGetColorFromCode)) == MH_OK &&
-            MH_EnableHook(target) == MH_OK) {
+        if (HookEngine::Create(target, reinterpret_cast<LPVOID>(&hkGetColorFromCode),
+                          reinterpret_cast<LPVOID*>(&oGetColorFromCode))) {
             g_hookInstalled = true;
             LOG_INFO("ColorCodeHook: §z gate hooked (theme gradient), "
                      "§y (theme accent), §x (Settings > Code Color) are live",

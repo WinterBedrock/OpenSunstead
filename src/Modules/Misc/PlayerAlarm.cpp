@@ -40,12 +40,6 @@ bool isPlayer(SDK::Actor* a) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Display name, NOT getRawName(): getRawName() == getUsername() iterates the
-// Level player unordered_map with no lock and no SEH, so calling it here (and
-// on Chams' render thread before that) faulted inside Sunstead.dll whenever
-// the roster mutated mid-iteration. getDisplayName() is SEH-guarded
-// (LocalName probe + guarded vtable nametag) and never touches the map.
-// Must stay outside any __try frame (returns std::string, MSVC C2712).
 bool getName(SDK::Actor* a, std::string& out) {
     if (!a) return false;
     out = SDK::stripNameFormatting(a->getDisplayName());

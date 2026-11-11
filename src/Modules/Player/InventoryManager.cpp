@@ -16,9 +16,6 @@ SUNSTEAD_DEFINE_DBG(imDbg, "InventoryManager", 300)
 extern uintptr_t g_ContainerScreenController_getItemStack;
 extern uintptr_t g_ItemStackNetManager_requestDrop;
 
-// Collection names that exist in 1.26.50.04's string table. NOTE: there is no
-// "inventory_items" on this build — the player screen exposes the main
-// inventory only through the combined grid.
 static const char* kHotbarItems = "hotbar_items";
 static const char* kCombined    = "combined_hotbar_and_inventory_items";
 static const char* kArmorItems  = "armor_items";
@@ -111,11 +108,6 @@ static std::string nameOfStack(SDK::ItemStack* st) {
     return n;
 }
 
-// The slot-model action entry points (ItemStackNetManagerScreen vtable on
-// 1.26.50.04, verified in IDA): place = drop-8, swap = drop-1, relative to
-// requestDrop's slot in the object's REAL vtable. Each must start with its
-// exact prologue; any mismatch (different build) disables the module instead
-// of calling a stranger function.
 static const unsigned char kPlaceProlog[] = {
     0x55, 0x41, 0x57, 0x41, 0x56, 0x56, 0x57, 0x53, 0x48, 0x81, 0xEC, 0xA8, 0x00, 0x00, 0x00,
     0x48, 0x8D, 0xAC, 0x24, 0x80, 0x00, 0x00, 0x00, 0x48, 0xC7, 0x45, 0x20, 0xFE, 0xFF, 0xFF, 0xFF,

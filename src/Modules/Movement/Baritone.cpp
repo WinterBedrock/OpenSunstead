@@ -179,9 +179,6 @@ void Baritone::beginSearch() {
     mGoalPos = goal;
     mGoal = std::make_shared<baritone::GoalBlock>(goal);
 
-    // Snap the start to the surface actually underfoot: standing on a slab or
-    // mid-jump leaves the feet without support and the search would report
-    // "no path" before taking a single step.
     int sy = (int)std::floor(pos.y - 1.62f);
     for (int probe = 0; probe < 3; ++probe) {
         const auto below = mWorld->getBlockNow(baritone::BlockPos((int)std::floor(pos.x), sy - 1, (int)std::floor(pos.z)));

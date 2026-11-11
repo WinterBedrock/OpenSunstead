@@ -1,8 +1,4 @@
 #pragma once
-// Sunstead SDK — shared plumbing (time, rng, focus, screen guards, throttled
-// logging). Layout rule: POD-only inside every __try (MSVC C2712 forbids __try
-// in a frame that needs C++ unwinding); std::string building goes through a POD
-// helper first.
 
 #include "../Types.h"
 #include "../Client/ScreenView.h"
@@ -13,8 +9,6 @@
 
 namespace SDK {
 
-// Time — all helpers share one clock (steady_clock). Comparing values from
-// different clocks (steady_clock ms vs GetTickCount64 vs QPC) is silently wrong.
 inline uint64_t nowMs() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -26,7 +20,6 @@ inline double nowSeconds() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// Sub-millisecond monotonic clock (QueryPerformanceCounter) in milliseconds.
 inline double nowMsHiRes() {
     static LARGE_INTEGER s_freq{};
     if (s_freq.QuadPart == 0) QueryPerformanceFrequency(&s_freq);
@@ -35,9 +28,6 @@ inline double nowMsHiRes() {
     return s_freq.QuadPart ? (double)c.QuadPart * 1000.0 / (double)s_freq.QuadPart : 0.0;
 }
 
-// Randomness — one engine, seeded once. Avoid clock-derived "random" such as
-// GetTickCount64() % range: correlated with a clock the caller compares against,
-// it moves in lockstep with the throttle.
 inline unsigned& rngState() {
     static unsigned s = 0;
     if (s == 0) {
@@ -47,7 +37,6 @@ inline unsigned& rngState() {
     return s;
 }
 
-// xorshift32 — deterministic, fast, no global lock, plenty for jitter.
 inline unsigned rngNext() {
     unsigned& s = rngState();
     s ^= s << 13; s ^= s >> 17; s ^= s << 5;
@@ -62,7 +51,6 @@ inline int   randInt(int lo, int hi) { // inclusive
     return lo + (int)(rngNext() % (unsigned)(hi - lo + 1));
 }
 
-// Window focus
 inline bool isGameWindowFocused() {
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
@@ -71,22 +59,14 @@ inline bool isGameWindowFocused() {
     return pid == GetCurrentProcessId();
 }
 
-// Screen guards
 inline bool isHudScreen() {
     return ScreenView::currentScreenName() == "hud_screen";
 }
 
-// "Draw/act only in world, unless the module's own Always-Show toggle is set."
 inline bool onlyOnHud(bool alwaysShow) { return alwaysShow || isHudScreen(); }
 
-// Throttled debug logging. Throttle state is per call site (an explicit
-// `state` reference; a shared timestamp would let two same-interval modules
-// starve each other). Formats into a caller-provided buffer so the varargs
-// frame stays POD; the caller does the Logger call, so this header stays
-// Logger-free and LOG_INFO can compile out in release, literal included.
 struct DbgThrottle { uint64_t last = 0; };
 
-// va_list form — the one that owns the throttle + formatting logic.
 inline bool dbgFormatV(DbgThrottle& state, bool enabled, unsigned intervalMs,
                        char* buf, size_t bufSize, const char* fmt, va_list ap) {
     if (!enabled || !buf || bufSize == 0) return false;
@@ -106,9 +86,6 @@ inline bool dbgFormat(DbgThrottle& state, bool enabled, unsigned intervalMs,
     return ok;
 }
 
-// Declares a module-local `name(bool enabled, const char* fmt, ...)` that logs
-// through the shared throttle. In release the format literal compiles out with
-// LOG_INFO (it only ever reaches the logger through this macro).
 #define SUNSTEAD_DEFINE_DBG(name, tag, intervalMs)                              \
     static ::SDK::DbgThrottle name##_state;                                     \
     static void name(bool enabled, const char* fmt, ...) {                      \

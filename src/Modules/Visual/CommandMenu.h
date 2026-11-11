@@ -19,16 +19,6 @@
 #include <vector>
 #include <Windows.h>
 
-// ---------------------------------------------------------------------------
-// CommandMenu — the command hint overlay.
-//
-// Opens on the command-prefix key while the HUD screen is up. The typed line
-// is shown at the top of the panel and the rows underneath are the matches for
-// whatever token is being typed right now: the command name on the first word,
-// then that command's own arguments (a module, one of its settings, a config
-// name, a key) on every word after it. Up/Down move the selection, Tab fills
-// the selected token in, Enter runs the whole line, Esc closes.
-// ---------------------------------------------------------------------------
 class CommandMenu {
 public:
     void OnRender() {
@@ -42,11 +32,6 @@ public:
             RebuildList();
         }
 
-        // ---- Animations -----------------------------------------------------
-        // Per-glyph reveal, the Chat input language: every typed codepoint owns
-        // one 0..1 progress that settles with an easeOutBack curve while the
-        // glyph drops in from a few px above and fades up. Backspace simply
-        // drops the tail entries.
         auto& rev = s_glyphReveal;
         size_t cpCount = 0;
         for (size_t i = 0; i < s_line.size(); ) {
@@ -71,10 +56,6 @@ public:
             return 1.0f + c3 * u * u * u + c1 * u * u;
         };
 
-        // Row appear animation: entries that were not on screen last frame
-        // (new matches after a keystroke) ease 0 -> 1 and slide in; rows that
-        // left simply stop being drawn. Keyed by label+desc so the same row
-        // keeps its amount while it stays in the list.
         for (const auto& e : s_list) {
             const std::string key = e.label + "\x1f" + e.desc;
             float& a = s_rowAnim[key];
@@ -101,9 +82,6 @@ public:
         const float rowH = 32.0f;
         const float inputH = 46.0f;
         const int visRows = std::min<int>((int)s_list.size(), 12);
-        // The panel grows/shrinks with the row count instead of popping: the
-        // eased height decides what is drawn this frame, and the row at the
-        // seam fades in with the reveal.
         const float listTargetH = visRows > 0 ? visRows * rowH : rowH;
         s_listH = MathUtils::animate(listTargetH, s_listH, std::clamp(dt * 16.0f, 0.0f, 1.0f));
         if (std::fabs(s_listH - listTargetH) < 0.25f) s_listH = listTargetH;
@@ -115,8 +93,6 @@ public:
         const ImVec4 panel(x, y, x + w, y + h);
         const float round = 12.0f;
 
-        // The plate is the only thing darkened. The world around it stays as it
-        // is, so the hint window does not dim the game.
         D2D::addBlurOptimized(dl, 8.0f * s_fade, std::optional<ImVec4>(panel), round);
         dl->AddRectFilled(ImVec2(panel.x, panel.y), ImVec2(panel.z, panel.w),
                           ImGui::GetColorU32(ImVec4(0.07f, 0.075f, 0.09f, 0.72f * s_fade)), round);
@@ -133,10 +109,6 @@ public:
         const ImU32 accentU = ImGui::GetColorU32(ImVec4(accent.Value.x, accent.Value.y,
                                                         accent.Value.z, s_fade));
 
-        // The line the user is actually typing, prefix included. The prefix is
-        // static; every typed codepoint is drawn with its own reveal progress
-        // (drops in from above + fades up, the Chat input language), the caret
-        // rides after the last one.
         const ImVec2 inputPos(panel.x + padX, panel.y + (inputH - inputFs) * 0.5f);
         dl->AddText(bold, inputFs, inputPos, ImGui::GetColorU32(ImVec4(1.f, 1.f, 1.f, s_fade)),
                     prefix.c_str());
@@ -177,11 +149,7 @@ public:
                         "No matches");
         }
 
-        // The eased reveal decides how many rows exist this frame; the row
-        // straddling the seam fades in with what is left of the height.
         const float reveal = s_listH / rowH;
-        // Selection plate: one rounded bar that SLIDES between rows at the
-        // eased index instead of snapping, plus the accent tick on its left.
         if (!s_list.empty() && s_sel >= 0 && s_sel < (int)s_list.size()) {
             const float sIdx = std::clamp(s_selBarY, 0.0f, (float)((int)s_list.size() - 1));
             const float sy = listTop + sIdx * rowH;
@@ -208,7 +176,6 @@ public:
             const float rowAnim = MathUtils::easeOutCubic(s_rowAnim[s_list[i].label + "\x1f" + s_list[i].desc]);
             const float rowA = s_fade * rowReveal * rowAnim;
             if (rowA < 0.01f) continue;
-            // New rows slide in from the left with their fade.
             const float slide = (1.0f - rowAnim) * 18.0f;
             const ImVec4 rowSlid(row.x + slide, row.y, row.z + slide, row.w);
 
@@ -253,8 +220,6 @@ public:
         s_line.clear();
         s_sel = 0;
         s_caret = 0.0f;
-        // Fresh overlay: glyph reveal starts empty, rows enter from scratch, the
-        // panel grows out of the input line and the selection plate starts put.
         s_glyphReveal.clear();
         s_rowAnim.clear();
         s_listH = 0.0f;
@@ -326,15 +291,8 @@ private:
     static std::string s_line;
     static std::vector<Entry> s_list;
 
-    // ---- Animation state -----------------------------------------------------
-    // Per-glyph reveal progress for the typed line (one entry per codepoint,
-    // 0 = just typed) — the Chat input language.
     static std::vector<float> s_glyphReveal;
-    // Per-row appear amount, keyed by label+desc so a row that stays in the
-    // list keeps its amount while a brand-new match starts at 0 and eases in.
     static std::unordered_map<std::string, float> s_rowAnim;
-    // Eased list height (rows * rowH) and eased selection row index — together
-    // they make the panel grow/shrink and the highlight slide between rows.
     static float s_listH;
     static float s_selBarY;
 
@@ -379,7 +337,6 @@ private:
         return nullptr;
     }
 
-    // What the word currently being typed can be, given the words before it.
     static void SuggestArgs(const std::vector<std::string>& done, const std::string& typed,
                             std::vector<Entry>& out) {
         if (done.empty()) return;
@@ -427,8 +384,6 @@ private:
         const bool typing = !s_line.empty() && s_line.back() != ' ';
         const std::vector<std::string> words = Words(s_line);
 
-        // The token being completed is the last word, unless the line ends in a
-        // space, in which case the user has moved on to the next argument.
         std::string typed;
         std::vector<std::string> done;
         if (typing && !words.empty()) {
@@ -460,8 +415,6 @@ private:
         if (s_sel < 0) s_sel = 0;
     }
 
-    // Replace the token being typed with the selected row and leave a trailing
-    // space, so the next keypress starts the following argument.
     static void Complete() {
         if (s_sel < 0 || s_sel >= (int)s_list.size()) return;
         const bool typing = !s_line.empty() && s_line.back() != ' ';
@@ -480,8 +433,6 @@ private:
 
     static void Run() {
         std::string line = s_line;
-        // A bare command name runs the selected row, so Enter on a highlighted
-        // command does not require Tab first.
         if (line.find(' ') == std::string::npos &&
             s_sel >= 0 && s_sel < (int)s_list.size())
             line = s_list[s_sel].insert;

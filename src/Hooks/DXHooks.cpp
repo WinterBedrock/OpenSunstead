@@ -1,8 +1,8 @@
 #include "DXHooks.h"
 
-#include "HookManager.h"
+
 #include "../Render/RenderManager.h"
-#include "../Memory/OffsetValidator.h"
+
 #include "../Core/Config.h"
 #include "../Core/Sunstead.h"
 #include "../Core/Logger.h"
@@ -10,7 +10,7 @@
 #include "GameHooks.h"
 #include "../Modules/Visual/Chams.h"
 #include "kiero.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <dxgi.h>
 #include <dxgi1_3.h>
 #include <d3d11.h>
@@ -24,13 +24,8 @@
 
 extern ID3D12CommandQueue* g_CommandQueue = nullptr;
 
-// The game's swapchain as last seen at Present + the SEH-guarded backbuffer
-// index probe shared by the camera queue producer and consumer (FrameView.h).
 void* g_gameSwapChain = nullptr;
 
-// POD-only (SEH): QI the flip-model swapchain to IDXGISwapChain3 and read the
-// backbuffer index. Returns 0xFFFFFFFF when unavailable (non-flip swapchain,
-// dead object, pre-init). Called once per Present and once per camera push.
 unsigned QueryPresentBackBufferIndex() {
     __try {
         IDXGISwapChain* sc = (IDXGISwapChain*)g_gameSwapChain;
@@ -46,9 +41,6 @@ unsigned QueryPresentBackBufferIndex() {
     }
 }
 
-// Renderer-module control flags (declared in DXHooks.h).
-bool g_ForceVSync = false;
-bool g_ForceDX11  = false;
 
 typedef void(__stdcall* ExecuteCommandLists_t)(ID3D12CommandQueue* queue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
 static ExecuteCommandLists_t oExecuteCommandLists = nullptr;
@@ -67,29 +59,12 @@ static void __stdcall hkExecuteCommandLists(ID3D12CommandQueue* queue, UINT NumC
         g_CommandQueue = queue;
         LOG_INFO("Captured D3D12 CommandQueue (DIRECT)", "DXHooks");
     }
-    // Chams observes one live graphics command list per submit so it can hook
-    // SetPipelineState exactly once (the call itself is a two-branch no-op
-    // once installed). Lists submitted every frame means pre-inject lists are
-    // never missed.
     if (ppCommandLists && NumCommandLists > 0 && ppCommandLists[0])
         Chams::NoteCommandList(ppCommandLists[0]);
     oExecuteCommandLists(queue, NumCommandLists, ppCommandLists);
 }
 
 static HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
-    // The Present detour is installed BEFORE the game-side hooks exist, so the
-    // first frames can fire while the inject thread is still scanning
-    // signatures / building modules / loading the config. Doing ANY of the
-    // overlay work in that window is the "inject comes up half-dead" bug:
-    // RenderManager::Initialize swaps the WndProc, the UI reads modules whose
-    // settings ConfigManager::Load then mutates concurrently, and the first
-    // frames race the tail of init. Wait until GameHooks is fully ready.
-    // Hooks are still being installed, but the loading overlay has to be on
-    // screen for the whole scan — otherwise the player only ever sees the
-    // success checkmark (init finishes, then the first Present draws Success
-    // for one frame and fades it). Draw ONLY the overlay here: no module
-    // ticks, no WndProc swap, no config. RenderManager::Initialize is safe to
-    // call early — it only builds the ImGui device.
     if (!GameHooks::HooksReady()) {
         if (Sunstead::g_InjectionStartMs != 0 &&
             Sunstead::g_InjectionState == Sunstead::InjectionState::Scanning) {
@@ -105,53 +80,19 @@ static HRESULT __stdcall hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval
     const unsigned bbNow = QueryPresentBackBufferIndex();
     GameHooks::BeginPresentFrame(bbNow);
 
-    // One-shot offset validation: probes every OffsetManager field against the
-    // live object graph and logs any that read implausible memory. Validate()
-    // returns -1 until the game has created ClientInstance (the first Present
-    // fires on the loading screen, before GameHooks scans signatures), so this
-    // retries every frame until the report is final.
-    static bool s_offsetsValidated = false;
-    if (!s_offsetsValidated && OffsetValidator::GetInstance().Validate() >= 0) {
-        s_offsetsValidated = true;
-    }
 
     if (!RenderManager::GetInstance().IsInitialized()) {
         RenderManager::GetInstance().Initialize(pSwapChain);
     }
 
-    // Streamer Mode (NameProtect)
-    uintptr_t localPlayer = HookManager::GetInstance().GetLocalPlayer(); 
-    if (localPlayer) {
-        std::string* nameTag = reinterpret_cast<std::string*>(localPlayer + 3008);
-        if (nameTag && !nameTag->empty() && *nameTag != "SunsteadPlayer") {
-            *nameTag = "SunsteadPlayer";
-        }
-    }
 
-    // Snapshot the current-frame camera transform BEFORE drawing overlays. The
-    // game writes GameRenderer::lastViewMatrix only after the world-render call
-    // returns (verified in the binary), so this Present-time capture is the
-    // first point where the matrix matches the world just rendered. Capturing
-    // it inside renderLevel instead read the previous frame's matrix, which is
-    // what made ESP/Tracers/NameTags boxes swim/lag while rotating the camera.
     GameHooks::CaptureFrameViewNow();
 
     if (RenderManager::GetInstance().IsInitialized()) {
         RenderManager::GetInstance().OnRender(pSwapChain);
     }
 
-    // Force VSync (Renderer module). When on, present with SyncInterval=1 and
-    // strip the ALLOW_TEARING present flag so the frame is synced to the monitor
-    // refresh regardless of the game's own vsync option. Mirror of Latite's
-    // force-DISABLE-vsync path (which sets SyncInterval=0 + ALLOW_TEARING).
-    UINT syncInterval = SyncInterval;
-    UINT presentFlags = Flags;
-    if (g_ForceVSync) {
-        syncInterval = 1;
-        presentFlags &= ~DXGI_PRESENT_ALLOW_TEARING;
-    }
-
-    return oPresent(pSwapChain, syncInterval, presentFlags);
+    return oPresent(pSwapChain, SyncInterval, Flags);
 }
 
 static HRESULT __stdcall hkResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
@@ -198,15 +139,12 @@ void DXHooks::Initialize() {
     if (SUCCEEDED(hr) && swapChain) {
         void** vTable = *(void***)swapChain;
         LOG_INFO("Hooking Present (index 8) & ResizeBuffers (index 13)", "DXHooks");
-        MH_CreateHook(vTable[8], &hkPresent, reinterpret_cast<LPVOID*>(&oPresent));
-        MH_EnableHook(vTable[8]);
+        HookEngine::Create(vTable[8], &hkPresent, reinterpret_cast<LPVOID*>(&oPresent));
 
-        MH_CreateHook(vTable[13], &hkResizeBuffers, reinterpret_cast<LPVOID*>(&oResizeBuffers));
-        MH_EnableHook(vTable[13]);
+        HookEngine::Create(vTable[13], &hkResizeBuffers, reinterpret_cast<LPVOID*>(&oResizeBuffers));
 
-        MH_CreateHook(vTable[39], &hkResizeBuffers1, reinterpret_cast<LPVOID*>(&oResizeBuffers1));
-        MH_EnableHook(vTable[39]);
-        
+        HookEngine::Create(vTable[39], &hkResizeBuffers1, reinterpret_cast<LPVOID*>(&oResizeBuffers1));
+
         swapChain->Release();
         device->Release();
         context->Release();
@@ -214,7 +152,6 @@ void DXHooks::Initialize() {
         LOG_ERROR("Failed to create D3D11 device and swapchain", "DXHooks");
     }
 
-    // Try DX12 to get command queue
     ID3D12Device* device12 = nullptr;
     if (SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&device12))) {
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -222,11 +159,25 @@ void DXHooks::Initialize() {
         ID3D12CommandQueue* dummyQueue = nullptr;
         if (SUCCEEDED(device12->CreateCommandQueue(&queueDesc, __uuidof(ID3D12CommandQueue), (void**)&dummyQueue))) {
             void** cqTable = *(void***)dummyQueue;
-            MH_CreateHook(cqTable[10], &hkExecuteCommandLists, reinterpret_cast<LPVOID*>(&oExecuteCommandLists));
-            MH_EnableHook(cqTable[10]);
+            HookEngine::Create(cqTable[10], &hkExecuteCommandLists, reinterpret_cast<LPVOID*>(&oExecuteCommandLists));
             LOG_INFO("Hooked D3D12 ExecuteCommandLists (index 10)", "DXHooks");
             dummyQueue->Release();
         }
+        ID3D12CommandAllocator* dummyAllocator = nullptr;
+        ID3D12GraphicsCommandList* dummyList = nullptr;
+        void** devTable = *(void***)device12;
+        void** listTable = nullptr;
+        if (SUCCEEDED(device12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      __uuidof(ID3D12CommandAllocator), (void**)&dummyAllocator)) &&
+            SUCCEEDED(device12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dummyAllocator,
+                                                  nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&dummyList)) &&
+            dummyList) {
+            dummyList->Close();
+            listTable = *(void***)dummyList;
+        }
+        Chams::HookDeviceVtables(devTable, listTable);
+        if (dummyList) dummyList->Release();
+        if (dummyAllocator) dummyAllocator->Release();
         device12->Release();
     }
 

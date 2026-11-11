@@ -8,6 +8,8 @@ IDR_SOUND_MODERN_ON  RCDATA "..\\assets\\sound\\modern_on.wav"
 IDR_SOUND_MODERN_OFF RCDATA "..\\assets\\sound\\modern_off.wav"
 IDR_SOUND_SMOOTH_ON  RCDATA "..\\assets\\sound\\smooth_on.wav"
 IDR_SOUND_SMOOTH_OFF RCDATA "..\\assets\\sound\\smooth_off.wav"
+IDR_SOUND_DING_ON    RCDATA "..\\assets\\sound\\ding_on.wav"
+IDR_SOUND_DING_OFF   RCDATA "..\\assets\\sound\\ding_off.wav"
 
 // Kick sounds (KickSounds module) + inject/uninject feedback.
 IDR_SOUND_FARD       RCDATA "../assets/sound/fard.wav"

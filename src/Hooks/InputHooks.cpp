@@ -1,5 +1,3 @@
-// Cursor / raw mouse input hooks — block the game from grabbing the cursor
-// or feeding mouse input while a client GUI (ClickGUI, custom chat) is open.
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
@@ -8,7 +6,7 @@
 #include "../Modules/Visual/Chat.h"
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <string>
 
 bool g_IsCursorGrabbed = true;
@@ -71,27 +69,24 @@ void InstallInputHooks() {
 
     uintptr_t grabCursorAddr = sig.ClientInstance_grabCursor;
     if (grabCursorAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(grabCursorAddr), &hkClientInstanceGrabCursor,
-                          reinterpret_cast<LPVOID*>(&oClientInstanceGrabCursor)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(grabCursorAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(grabCursorAddr), &hkClientInstanceGrabCursor,
+                          reinterpret_cast<LPVOID*>(&oClientInstanceGrabCursor))) {
             LOG_INFO("ClientInstance::grabCursor hooked", "GameHooks");
         }
     }
 
     uintptr_t releaseCursorAddr = sig.ClientInstance_releaseCursor;
     if (releaseCursorAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(releaseCursorAddr), &hkClientInstanceReleaseCursor,
-                          reinterpret_cast<LPVOID*>(&oClientInstanceReleaseCursor)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(releaseCursorAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(releaseCursorAddr), &hkClientInstanceReleaseCursor,
+                          reinterpret_cast<LPVOID*>(&oClientInstanceReleaseCursor))) {
             LOG_INFO("ClientInstance::releaseCursor hooked", "GameHooks");
         }
     }
 
     uintptr_t mouseInputAddr = sig.GameCore_handleMouseInput;
     if (mouseInputAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(mouseInputAddr), &hkGameCoreHandleMouseInput,
-                          reinterpret_cast<LPVOID*>(&oGameCoreHandleMouseInput)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(mouseInputAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(mouseInputAddr), &hkGameCoreHandleMouseInput,
+                          reinterpret_cast<LPVOID*>(&oGameCoreHandleMouseInput))) {
             LOG_INFO("GameCore::handleMouseInput hooked", "GameHooks");
         }
     }

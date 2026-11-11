@@ -1,9 +1,4 @@
 #pragma once
-// Sunstead SDK — world-space box drawing.
-//
-// FreeCam, OreMiner, BlockESP, Baritone and ESP each spelled out the same
-// 8-corner array plus a static edges[12][2] table and the same projection loop.
-// One implementation here; callers pass colours and thickness.
 
 #include "../SDK/Types.h"
 #include "FrameView.h"
@@ -40,9 +35,6 @@ inline const int (*boxEdges())[2] {
     return e;
 }
 
-// Wireframe box, optionally with a filled bottom face. `fill` of 0 skips it.
-// Draws nothing when fewer than two corners project (a box entirely behind the
-// camera would otherwise streak lines across the screen).
 inline void drawBoxWireframe(ImDrawList* dl, const Vec3& mn, const Vec3& mx,
                              const float* mvp, const Vec3& origin,
                              const ImVec2& screen, ImU32 col,

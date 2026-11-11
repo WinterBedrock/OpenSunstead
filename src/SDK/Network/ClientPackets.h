@@ -1,7 +1,4 @@
 #pragma once
-// SDK client-bound packets Sunstead actively uses / injects: TextPacket (0x09,
-// chat send) and PlayerAuthInput (0x90, silent rotation inject). Go through
-// the helpers here instead of hard-coding packet IDs / field offsets.
 
 #include "Packet.h"
 #include "Packets/TextPacket.h"
@@ -34,9 +31,6 @@ inline constexpr uintptr_t kPAI_yHeadRot = 0x44; // was wrong as 0x38 (that's po
 inline bool isPlayerAuthInput(void* packet) {
     if (!packet || !sdk_safe_ptr(packet, 0x40)) return false;
     __try {
-        // Virtual getId via first vtable slot after dtor is unreliable across
-        // builds; GameHooks compares against PacketID enum after sehGetPacketId.
-        // Here we only expose field writers for a packet already identified.
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }

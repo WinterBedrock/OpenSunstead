@@ -5,21 +5,6 @@
 #include <string>
 #include <utility>
 
-// TabList — a clean, centered list of every player currently connected to the
-// server. Ported from the Latite hud/TabList feature, rebuilt on the Sunstead
-// ImGui + D3D11 stack.
-//
-//   * Players are enumerated through Level::getPlayerList() which returns the
-//     server-side player-list map (UUID -> PlayerListEntry). This contains ALL
-//     connected players, not just nearby actors.
-//   * Bind Type mirrors Jetpack/Zoom: "Hold" only draws while the keybind is
-//     held; "Toggle" draws the whole time the module is enabled (incl. when it
-//     was toggled from the ClickGUI).
-//   * When the player count exceeds "Rows Per Column" the list wraps into
-//     multiple side-by-side columns (like Latite) so everyone always fits.
-//   * Player head icons are decoded from Actor::getSkin()->mSkinImage by
-//     SkinUtils (face + hat overlay) and uploaded as real D3D11 textures,
-//     cached per player name and pruned each frame.
 class TabList : public Module {
 public:
     TabList() : Module("TabList", "Lists the players in the world", Category::Visual, VK_TAB) {
@@ -48,9 +33,5 @@ private:
     void releaseHeads();
     void syncHoldMode();
 
-    // Open/close animation. mAnim eases toward 1 while the list should be shown
-    // and toward 0 when it should hide; the panel fades + slides/scales with it
-    // and only stops rendering once it is fully closed (mAnim ~ 0), giving a
-    // smooth appear/disappear instead of a hard pop.
     float mAnim = 0.0f;
 };

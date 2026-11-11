@@ -5,9 +5,6 @@ namespace SDK { class BlockSource; }
 
 namespace baritone {
 
-// IWorld over SDK::BlockSource. Classification is name-based (Bedrock names are
-// the stable signal across versions); a per-search cache lives in the
-// implementation because the search asks about the same cells repeatedly.
 class BlockSourceWorld final : public IWorld {
     SDK::BlockSource* source;
     mutable std::unordered_map<BlockPos, BlockState, SDK::BlockPosHash> cache;

@@ -23,9 +23,6 @@ namespace SDK {
 static constexpr uintptr_t kUircClientInstance = 0x08;
 static constexpr uintptr_t kUircScreenContext  = 0x10;
 
-// BaseActorRenderContext: itemRenderer lives at +0x58. Exact object size is
-// unpublished, so over-allocate generously — the ctor writes only within
-// its own object.
 static constexpr uintptr_t kBarcItemRenderer = 0x58;
 static constexpr size_t    kBarcSize         = 0x600;
 
@@ -89,10 +86,6 @@ static bool sehDrawBlockIcon(void* mcuirc, void* screenContext, void* clientInst
             /*scale*/ scale,
             /*arg11*/ 0);
 
-        // MANDATORY: renderGuiItemNew only queues geometry into the tessellator;
-        // the game flushes after every call. Without this the batch is never
-        // submitted and grows every frame until the game dies. Flag byte 0
-        // matches a plain icon draw.
         unsigned char renderFlags = 0;
         using flush_t = void*(__fastcall*)(void*, void*, unsigned char*);
         ((flush_t)g_ItemRenderer_flushGuiItem)(mcuirc, ctxBuf, &renderFlags);
@@ -116,9 +109,6 @@ bool drawBlockIcon(void* mcuirc, void* block, float x, float y, float pixels) {
     if (!clientInstance || !sdk_safe_ptr(clientInstance, sizeof(void*))) return false;
     if (!screenContext  || !sdk_safe_ptr(screenContext,  sizeof(void*))) return false;
 
-    // Layout self-check: if +0x08 really is the ClientInstance then it must be
-    // the one we resolve independently. A mismatch means the render-context
-    // layout drifted, and we bail instead of feeding garbage to the game.
     ClientInstance* known = ClientInstance::get();
     if (!known || (void*)known != clientInstance) return false;
     Actor* player = known->getLocalPlayer();
@@ -129,9 +119,6 @@ bool drawBlockIcon(void* mcuirc, void* block, float x, float y, float pixels) {
     MinecraftGame* mcGame = known->getMinecraftGame();
     if (!mcGame || !sdk_safe_ptr(mcGame, sizeof(void*))) return false;
 
-    // COORDINATE SPACE: renderGuiItemNew works in the game's UI units (the
-    // game's callers pass pos * guiScaleFrac), our HUD positions are ImGui
-    // pixels — convert here so callers can keep thinking in pixels.
     GuiData* gd = known->getGuiData();
     float frac = gd ? gd->getGuiScaleFrac() : 0.f;
     if (frac <= 0.f) {

@@ -14,9 +14,6 @@
 #include <unordered_set>
 #include <string>
 
-// Block classification, colours, block-box projection and the exposed-to-air
-// filter now live in the SDK (SDK::BlockScan) — shared with Xray, so a new
-// ore or renamed block is fixed once for every block overlay.
 using namespace SDK::BlockScan;
 
 namespace {
@@ -70,13 +67,6 @@ static void debugLogThrottled(const std::string& msg) {
 // arbitrary-size cluster hull below stays local (different purpose).
 
 
-// Convex hull (Andrew's monotone chain, same approach as the per-cube hull in
-// Xray.cpp's Outline mode) over an ARBITRARY point set: all projected corners
-// of every block in one kind-group -> a single silhouette polygon around the
-// whole cluster (classic "block cluster outline" ESP look). Sorts a copy of
-// pts and fills hull (ordered closed loop, no duplicate end point). Returns
-// the hull point count. File-local + distinctly named (ESP.cpp/Xray.cpp have
-// their own copies) so no ODR clash.
 static int blockEspGroupHull(std::vector<ImVec2>& pts, std::vector<ImVec2>& hull) {
     hull.clear();
     if (pts.size() < 3) return 0;
@@ -129,11 +119,6 @@ void BlockESP::resetScan(const SDK::BlockPos& center, int radius) {
     mCenter = center;
     mRadius = radius;
     mCursor = 0;
-    // Restart the in-progress pass, but DELIBERATELY keep mFoundBlocks intact:
-    // the last completed set keeps rendering until the new pass finishes and
-    // swaps in. Clearing it here would blank every box for a few ticks on every
-    // recenter (movement/teleport) -> flicker. mScanBuffer + cache are
-    // tick-thread only, so no lock is needed for them.
     mScanBuffer.clear();
     mLegacyKindCache.clear();
 }
@@ -194,12 +179,6 @@ void BlockESP::OnTick() {
     int r2 = radius * radius;
     int scanned = 0, gotBlock = 0, gotLegacy = 0, classified = 0, enabled = 0, exposedRejected = 0, written = 0;
 
-    // Progressive, double-buffered scan. We accumulate every match of the
-    // current pass into mScanBuffer (tick-thread only, no lock). Only when the
-    // pass completes do we atomically swap it into mFoundBlocks under the lock.
-    // The render thread therefore always sees a COMPLETE result set and never a
-    // half-refilled one -> the boxes stay solid instead of flickering as the
-    // budget-limited scan walks the volume across multiple ticks.
     for (int i = 0; i < budget && total > 0; ++i) {
         if (mCursor == 0) mScanBuffer.clear();   // begin a fresh pass
         int cur = mCursor++;
@@ -293,9 +272,6 @@ void BlockESP::OnRender() {
         return;
     }
 
-    // Camera MVP via the shared delayed-transform acquisition (FrameView.h):
-    // the classic pipeline matches the matrix to the frame actually on
-    // screen, so boxes stop sliding off blocks while the camera moves.
     float mvp[16];
     Vec3 origin(0, 0, 0);
     if (!acquireCameraMVP(ci, mvp, origin)) {
@@ -321,11 +297,6 @@ void BlockESP::OnRender() {
 
     int projected = 0;
     if (mergeMode) {
-        // ---- Merge: face-adjacent same-kind blocks become ONE shape ------
-        // BFS the found set for face-connected clusters of the same kind;
-        // every corner the cluster projects becomes a single 2D rect (2D
-        // mode) or one hull contour (3D / Outline) — an ore vein reads as one
-        // blob instead of a box per block.
         static const int kDirs[6][3] = {
             { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 }
         };
@@ -377,20 +348,6 @@ void BlockESP::OnRender() {
                 dl->AddRect(mn, mx, ImColor(0, 0, 0, 220), 0.0f, 0, 3.0f);
                 dl->AddRect(mn, mx, col, 0.0f, 0, 1.5f);
             } else if (type == 1) {
-                // 3D + Merge: the TRUE union wireframe. A voxel-union edge is
-                // drawn iff the union SURFACE folds along it. With a = the
-                // neighbour across the edge's first adjacent face, b = across
-                // the second, c = the diagonal neighbour, the edge is
-                // suppressed only when the surface runs STRAIGHT through it
-                // (exactly one of a/b present: the two coplanar side faces
-                // fuse seamlessly across the seam — the line Merge exists to
-                // remove) or when it is fully interior (a, b and c all
-                // present). The old "both adjacent faces shared" test never
-                // removed the plain seam between two side-by-side blocks and
-                // wrongly ate the concave L-corner edges, so Merge visibly did
-                // nothing in 3D.
-                // Per-edge face directions, matching kCubeEdges order (the
-                // two faces each edge belongs to; see kCubeFaces).
                 static const int kEdgeDirs[12][2][3] = {
                     { { 0, -1, 0 }, { 0, 0, -1 } },  // {0,1}
                     { { 0, -1, 0 }, { 1, 0, 0 } },   // {1,2}
@@ -415,9 +372,6 @@ void BlockESP::OnRender() {
                     if (SDK::BlockScan::projectBlockBox(fb->pos, mvp, origin, screen, p, v) < 2)
                         continue;
                     const SDK::BlockPos& P = fb->pos;
-                    // Same-KIND cluster membership: a neighbour block of a
-                    // different kind is a separate cluster and must not eat
-                    // this cluster's edges or faces.
                     auto nb = [&](int dx, int dy, int dz) {
                         const SDK::BlockPos q(P.x + dx, P.y + dy, P.z + dz);
                         auto it = lookup.find(q);
@@ -450,13 +404,6 @@ void BlockESP::OnRender() {
                     }
                 }
             } else {
-                // Outline + Merge: the TRUE union silhouette. Every block
-                // strokes its own flat hull EXCEPT the edges whose midpoint
-                // falls inside a NEIGHBOURING block's hull — the junction
-                // lines vanish, so touching blocks fuse along their shared
-                // edge, concave notches (the L) stay notched, and a lone
-                // block keeps the plain Outline look. No one-big-hull
-                // diagonal bridging, no 3D cage.
                 struct SHull { ImVec2 pts[18]; int n; };
                 std::vector<SHull> hulls;
                 for (const FoundBlock* fb : cluster) {
@@ -470,19 +417,6 @@ void BlockESP::OnRender() {
                     if (h.n >= 3) hulls.push_back(h);
                 }
                 if (!hulls.empty()) {
-                    // Fill FIRST, and as ONE shape: the convex hull over EVERY
-                    // projected corner of the whole cluster. The per-block hull
-                    // fills used before still showed artifacts no matter what:
-                    // adjacent hulls OVERLAP in screen space at oblique angles
-                    // (a block's hull spills past the true union), so the
-                    // translucent fills stacked into darker patches with
-                    // visible boundaries, and their shared edges double-blended
-                    // even with AA off. A single cluster-wide hull has no
-                    // internal boundaries AT ALL — one polygon, one uniform
-                    // alpha, zero seams. The strokes on top still trace the
-                    // true union outline (concave notches stay visible as
-                    // unfilled corners, matching the regular ESP's Outline
-                    // fill philosophy).
                     if (doFill) {
                         ImVec2 allPts[8 * 64];
                         int nAll = 0;
@@ -577,9 +511,6 @@ void BlockESP::OnRender() {
                     dl->AddLine(p[a], p[b], col, 1.5f);
                 }
             } else {
-                // Outline: silhouette only -> convex hull of the 8 projected
-                // corners, drawn as one closed contour (no interior edges
-                // crossing the block, no duplicated 12-edge cube wireframe).
                 ImVec2 valids[8];
                 int nv = 0;
                 for (int i = 0; i < 8; ++i) if (v[i]) valids[nv++] = p[i];

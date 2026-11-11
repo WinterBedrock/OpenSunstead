@@ -1,6 +1,4 @@
 #pragma once
-// Client-side mob effects: hooks + local poll + optional listeners.
-// Types/layout live in MobEffect.h; Actor::getStatusEffects() reads the component.
 
 #include "MobEffect.h"
 #include <cstdint>

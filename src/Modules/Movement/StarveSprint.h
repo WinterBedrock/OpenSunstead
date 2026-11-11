@@ -4,9 +4,6 @@
 #include <Windows.h>
 #include <vector>
 
-// StarveSprint — allow sprinting when hunger is below the vanilla threshold
-// (3 hunger bars / food level 6).
-// Optionally spoof PlayerAuthInput sprint flags so the server does not see sprint.
 class StarveSprint : public Module {
 public:
     StarveSprint()

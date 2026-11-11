@@ -19,14 +19,6 @@ static winrt::com_ptr<ID2D1SolidColorBrush> brush = nullptr;
 
 bool initD2D = false;
 
-// Frame-shared backbuffer snapshot for blur. The old per-region path did a
-// CreateBitmap + CopyFromBitmap of EACH clip region every frame (ArrayList alone
-// issues one per card), which stalled the GPU. Apollo's model copies the whole
-// backbuffer ONCE per frame and lets every blur region sample from that single
-// copy through a full-screen image brush. We adopt that here: the copy is made
-// lazily on the first blur callback of a frame and released in endRender(). The
-// per-region Flush() still stays (it is required for correct interleave with
-// ImGui's D3D11 draws -- see the note in blurCallbackOptimized).
 static ID2D1Bitmap* g_frameBlurCopy = nullptr;
 static bool         g_frameBlurCopyValid = false;
 // Pending optimized-blur callbacks this frame (batch Flush on the last one).
@@ -47,16 +39,6 @@ static ID2D1Bitmap* ensureFrameBlurCopy() {
     return g_frameBlurCopy;
 }
 
-// Persistent PRE-BLURRED full-screen bitmap. This is the real FPS fix: instead
-// of letting every blur region re-evaluate the Gaussian effect graph over the
-// whole backbuffer (each FillGeometry(imageBrush(effectOutput)) re-runs the
-// blur -- N regions => N full-screen blurs => the frame-time sink the user saw,
-// worst with ArrayList/ClickGUI columns issuing one blur per card), we run the
-// Gaussian EXACTLY ONCE per (strength,mode) per frame, render it into this
-// TARGET bitmap, and have every region sample this cheap static bitmap through
-// an image brush. The bitmap object persists across frames (recreated only on
-// resize); its CONTENTS are marked stale each frame via releaseFrameBlurCopy so
-// the first blur of a new frame re-blurs the fresh backbuffer.
 static ID2D1Bitmap1* g_blurredBitmap = nullptr;
 static UINT  g_blurredW = 0, g_blurredH = 0;
 static float g_blurredStrength = -1.0f; // -1 => contents stale, must re-blur
@@ -78,11 +60,6 @@ static void releaseFrameBlurCopy() {
     g_blurredMode = -1;
 }
 
-// Returns a full-screen bitmap holding the backbuffer blurred at `strength`.
-// `speed` picks the cheaper Gaussian mode. Re-blurs only when the requested
-// (strength,mode) differs from what is currently baked THIS frame; identical
-// requests (the common case -- one global blur strength) reuse the bake, so the
-// expensive Gaussian runs once no matter how many regions ask for it.
 static ID2D1Bitmap1* ensureBlurredBitmap(float strength, bool speed) {
     if (!sourceBitmap || !d2dDeviceContext || !blurEffect) return nullptr;
     D2D1_SIZE_U size = sourceBitmap->GetPixelSize();
@@ -127,13 +104,6 @@ static ID2D1RoundedRectangleGeometry* cachedClipRectGeo = nullptr;
 static float cachedBlurStrength = -1.0f;
 static bool requestFlush = false;
 
-// blurCallbackOptimized uses the proven per-region blur mechanics (copy region
-// -> Gaussian -> translated image brush -> FillGeometry) and DOES flush per
-// region -- that flush is required for correctness because the callbacks run
-// interleaved with ImGui's D3D11 draws on the same backbuffer (see the long
-// note at the flush in blurCallbackOptimized). It differs from blurCallback
-// only in using the cheaper SPEED Gaussian mode. releaseBakedBlurs is a
-// harmless no-op kept so existing call sites (shutdown/endRender) stay valid.
 static void releaseBakedBlurs() {}
 
 float dpi = 0.0f;
@@ -347,11 +317,6 @@ void D2D::blurCallback(const ImDrawList* parent_list, const ImDrawCmd* cmd) {
     float height = clipRect.w - clipRect.y;
     if (width <= 0.0f || height <= 0.0f) return;
 
-    // Sample from the ONCE-baked full-screen blurred bitmap (QUALITY mode).
-    // The heavy Gaussian ran a single time in ensureBlurredBitmap; here we only
-    // do a cheap image-brush fill of this region. The brush source rect spans
-    // the whole screen and maps 1:1 to pixels (no transform), so FillGeometry
-    // at clipRect samples the correct blurred area.
     ID2D1Bitmap1* blurred = ensureBlurredBitmap(data->strength, /*speed=*/false);
     if (!blurred) return;
     D2D1_SIZE_U bmpSize = sourceBitmap->GetPixelSize();
@@ -396,9 +361,6 @@ bool D2D::addBlur(ImDrawList* drawList, float strength, std::optional<ImVec4> cl
     auto data = uniqueData.get();
     blurCallbacks.push_back(uniqueData);
     drawList->AddCallback(blurCallback, data);
-    // D2D Flush mutates the D3D11 pipeline state. Tell ImGui to rebind its
-    // shaders/RTV afterwards — without this, later draw commands can hang the
-    // Present path and the whole HUD freezes until restart.
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     return true;
 }
@@ -425,12 +387,6 @@ void D2D::blurCallbackOptimized(const ImDrawList* parent_list, const ImDrawCmd* 
     float height = clipRect.w - clipRect.y;
     if (width <= 0.0f || height <= 0.0f) return;
 
-    // Sample the ONCE-baked full-screen blurred bitmap (SPEED mode). The heavy
-    // Gaussian ran a single time in ensureBlurredBitmap regardless of how many
-    // regions (ArrayList cards, ClickGUI columns) request blur this frame --
-    // that collapse from N full-screen blurs to 1 is the FPS fix. Here we only
-    // do a cheap image-brush fill. The full-screen brush source rect maps 1:1
-    // to screen pixels, so FillGeometry(clipRect) samples the right area.
     ID2D1Bitmap1* blurred = ensureBlurredBitmap(data->strength, /*speed=*/true);
     if (!blurred) return;
     D2D1_SIZE_U bmpSize = sourceBitmap->GetPixelSize();
@@ -451,14 +407,6 @@ void D2D::blurCallbackOptimized(const ImDrawList* parent_list, const ImDrawCmd* 
         outImageBrush->Release();
     }
 
-    // Flush EVERY blur region. The deferred "flush only on the last callback"
-    // batching was a frame-ordering bug: the batched D2D fills stayed pending
-    // while ImGui went on drawing the panels and TEXT of the modules between
-    // blur regions, and the final flush then painted the pending blurred fills
-    // ON TOP of already-drawn text (the Coordinates/FPS/Ping "text disappears
-    // with blur" bug). HUD frames issue a handful of blur regions, so a
-    // per-region GPU sync costs nothing and keeps the draw order strictly
-    // blur -> panel -> text for every module.
     d2dDeviceContext->Flush();
     g_blurFlushRemaining = 0;
 }

@@ -1,7 +1,3 @@
-// Chat hooks. Vanilla chat lines that start with the command prefix are
-// swallowed here and rerouted to CommandManager; everything else keeps its
-// path to the network. displayClientMessage feeds the custom Chat module's
-// history.
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/Client/Chat.h"
@@ -10,7 +6,7 @@
 #include "../Memory/OffsetManager.h"
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -53,11 +49,6 @@ namespace {
         }
     }
 
-    // Commands must NOT run inside the sendChatMessage hook: the reply goes
-    // through displayClientMessage, which re-enters the chat screen's message
-    // append path while the submit is still on the stack and fast-fails inside
-    // the ChatEvent string destructors (a heap-block validation abort, not a
-    // C++ exception). Queue here, run on the next renderLevel frame instead.
     static std::mutex s_deferredCmdMutex;
     static std::deque<std::string> s_deferredCmds;
 
@@ -168,12 +159,11 @@ void GameHooks::SendChatMessage(const std::string& text) {
 void InstallChatHooks() {
     uintptr_t sendChatMessageAddr = SigManager::GetInstance().ChatScreenController_sendChatMessage;
     if (sendChatMessageAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(sendChatMessageAddr), &hkChatScreenController_sendChatMessage,
-                          reinterpret_cast<LPVOID*>(&SDK::Chat::g_oSendChatMessage)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(sendChatMessageAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(sendChatMessageAddr), &hkChatScreenController_sendChatMessage,
+                          reinterpret_cast<LPVOID*>(&SDK::Chat::g_oSendChatMessage))) {
             LOG_INFO("chat hook installed @ " + std::to_string(sendChatMessageAddr), "GameHooks");
         } else {
-            LOG_ERROR("chat hook CreateHook FAILED @ " + std::to_string(sendChatMessageAddr), "GameHooks");
+            LOG_ERROR("chat hook FAILED @ " + std::to_string(sendChatMessageAddr), "GameHooks");
         }
     } else {
         LOG_WARN("chat signature not found", "GameHooks");
@@ -181,13 +171,12 @@ void InstallChatHooks() {
 
     uintptr_t screenModelSendAddr = SigManager::GetInstance().ClientInstanceScreenModel_sendChatMessage;
     if (screenModelSendAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(screenModelSendAddr), &hkClientInstanceScreenModel_sendChatMessage,
-                          reinterpret_cast<LPVOID*>(&oClientInstanceScreenModelSendChatMessage)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(screenModelSendAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(screenModelSendAddr), &hkClientInstanceScreenModel_sendChatMessage,
+                          reinterpret_cast<LPVOID*>(&oClientInstanceScreenModelSendChatMessage))) {
             LOG_INFO("ClientInstanceScreenModel::sendChatMessage hooked (vanilla-chat commands) @ " +
                      std::to_string(screenModelSendAddr), "GameHooks");
         } else {
-            LOG_ERROR("ClientInstanceScreenModel::sendChatMessage CreateHook FAILED @ " +
+            LOG_ERROR("ClientInstanceScreenModel::sendChatMessage FAILED @ " +
                       std::to_string(screenModelSendAddr), "GameHooks");
         }
     } else {
@@ -196,13 +185,12 @@ void InstallChatHooks() {
 
     uintptr_t displayMsgAddr = SigManager::GetInstance().GuiData_displayClientMessage;
     if (displayMsgAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(displayMsgAddr), &hkGuiDataDisplayClientMessage,
-                          reinterpret_cast<LPVOID*>(&oGuiDataDisplayClientMessage)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(displayMsgAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(displayMsgAddr), &hkGuiDataDisplayClientMessage,
+                          reinterpret_cast<LPVOID*>(&oGuiDataDisplayClientMessage))) {
             LOG_INFO("GuiData::displayClientMessage hooked (Chat history)", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook GuiData::displayClientMessage", "GameHooks");
-        }
+       }
     } else {
         LOG_WARN("GuiData::displayClientMessage signature not found; Chat history inactive", "GameHooks");
     }

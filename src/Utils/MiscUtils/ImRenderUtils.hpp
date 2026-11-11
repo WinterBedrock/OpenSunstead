@@ -6,12 +6,6 @@
 #include <cmath>
 
 namespace ImRenderUtils {
-    // Visual size correction for fonts with tall metrics (Mojangles, Comfortaa)
-    // — set by RenderManager each frame based on the pushed GUI font. The
-    // compiled ImGui 1.92 rasterizes glyphs at the requested size, so a font
-    // whose ascent/em is large simply reads oversized at the same nominal px.
-    // Every text helper here multiplies the requested size by this factor, so
-    // all GUI text shrinks uniformly when such a font is selected.
     inline float g_visualFontScale = 1.0f;
 
     inline void fillRectangle(ImVec4 rect, ImColor color, float alpha, float radius = 0.0f, ImDrawList* drawList = nullptr, int flags = 0) {
@@ -20,18 +14,6 @@ namespace ImRenderUtils {
         drawList->AddRectFilled(ImVec2(rect.x, rect.y), ImVec2(rect.z, rect.w), color, radius, flags);
     }
 
-    // Rounded rectangle filled with a linear gradient, anti-aliasing intact.
-    //
-    // AddRectFilledMultiColor emits four plain vertices and cannot round its
-    // corners, and PushClipRect is a RECTANGULAR scissor — so clipping a
-    // multi-colour quad to a rounded plate still paints the very corner pixels
-    // the rounding carved out. That is the "square under the round corner"
-    // artefact.
-    //
-    // Instead the shape is emitted once as an ordinary rounded rect in white and
-    // its vertices are tinted in place. ImGui's anti-aliased fill emits the outer
-    // fringe with alpha 0, so SCALING each vertex's alpha (rather than replacing
-    // it) keeps the silhouette smooth.
     inline void fillGradientRounded(ImDrawList* dl, const ImVec4& rect,
                                     const ImVec4& c0, const ImVec4& c1,
                                     float rounding, int flags = 0, bool vertical = true) {
@@ -82,9 +64,6 @@ namespace ImRenderUtils {
         if (!font) return;
         color.Value.w *= alpha;
         if (shadow) {
-            // Shadow must follow the final text alpha — using the raw `alpha`
-            // param left a full-opacity black ghost when callers put fade in
-            // the ImColor (TargetHUD fade-out).
             int sa = (int)(255.0f * color.Value.w);
             if (sa > 0)
                 _dl->AddText(font, size, ImVec2(pos.x + 1, pos.y + 1), ImColor(0, 0, 0, sa), text.c_str());

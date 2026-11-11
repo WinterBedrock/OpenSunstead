@@ -1,39 +1,22 @@
 #pragma once
 
-#include "Platform.h"
-
-// Macros wrapping intrinsics
-#if defined(LIBHAT_X86_64)
-    #define LIBHAT_TZCNT64(num) _tzcnt_u64(num)
-    #define LIBHAT_BLSR64(num) _blsr_u64(num)
-#elif defined(LIBHAT_X86)
-    #include <bit>
-    #define LIBHAT_TZCNT64(num) std::countl_zero(num)
-    #define LIBHAT_BLSR64(num) num & (num - 1)
-#endif
+#include "platform.h"
 
 #ifdef _MSC_VER
-    #include <intrin.h>
-
-    namespace hat::detail {
-        inline unsigned long bsf(unsigned long num) {
-            unsigned long offset;
-            _BitScanForward(&offset, num);
-            return offset;
-        }
-    }
-
+    #ifndef LIBHAT_MODULE
+        #include <intrin.h>
+    #endif
     #define LIBHAT_RETURN_ADDRESS() _ReturnAddress()
-    #define LIBHAT_BSF32(num) hat::detail::bsf(num)
 #else
     #define LIBHAT_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
-    #define LIBHAT_BSF32(num) __builtin_ctz(num)
 #endif
 
 #if __cpp_if_consteval >= 202106L
     #define LIBHAT_IF_CONSTEVAL consteval
 #else
-    #include <type_traits>
+    #ifndef LIBHAT_MODULE
+        #include <type_traits>
+    #endif
     #define LIBHAT_IF_CONSTEVAL (std::is_constant_evaluated())
 #endif
 
@@ -50,16 +33,20 @@
 #endif
 
 #if __cpp_lib_unreachable >= 202202L
-    #include <utility>
+    #ifndef LIBHAT_MODULE
+        #include <utility>
+    #endif
     #define LIBHAT_UNREACHABLE() std::unreachable()
 #elif defined(__GNUC__) || defined(__clang__)
     #define LIBHAT_UNREACHABLE() __builtin_unreachable()
 #elif defined(_MSC_VER)
     #define LIBHAT_UNREACHABLE() __assume(false)
 #else
-    #include <cstdlib>
+    #ifndef LIBHAT_MODULE
+        #include <cstdlib>
+    #endif
     namespace hat::detail {
-        [[noreturn]] inline void unreachable_impl() {
+        [[noreturn]] inline void unreachable_impl() noexcept {
             std::abort();
         }
     }
@@ -87,4 +74,18 @@
     #define LIBHAT_FORCEINLINE __forceinline
 #else
     #define LIBHAT_FORCEINLINE inline
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+    #define LIBHAT_TARGET(arch) __attribute__((target(arch)))
+#else
+    #define LIBHAT_TARGET(arch)
+#endif
+
+#if __has_cpp_attribute(no_unique_address)
+    #define LIBHAT_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#elif __has_cpp_attribute(msvc::no_unique_address)
+    #define LIBHAT_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+    #define LIBHAT_NO_UNIQUE_ADDRESS
 #endif

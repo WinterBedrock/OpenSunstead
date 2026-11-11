@@ -76,9 +76,6 @@ public:
         return (pow(2, 8 * this->percentage) - 1) / 255;
     }
     __forceinline double easeOutExpo() {
-        // Clamp endpoints: the raw formula yields 0.996 at t=1 (never reaches 1.0),
-        // which makes the ClickGUI panel render at a fractional scale -> subpixel
-        // seams ("stripes") and a permanently slightly-shrunken menu.
         if (this->percentage <= 0.0f) return 0.0;
         if (this->percentage >= 1.0f) return 1.0;
         return 1 - pow(2, -8 * this->percentage);

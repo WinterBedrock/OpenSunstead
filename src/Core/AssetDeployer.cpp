@@ -45,15 +45,14 @@ bool AssetDeployer::Extract(int resId, const char* outName, bool overwrite) {
 }
 
 void AssetDeployer::DeployAll() {
-    // Toggle sounds are embedded in the DLL as RCDATA. On first inject, drop
-    // them into %APPDATA%/Sunstead/assets so they exist for playback (and so the
-    // user can replace them with their own .wav later). Do not overwrite.
     ExtractResource(IDR_SOUND_ON,         "on.wav",         false);
     ExtractResource(IDR_SOUND_OFF,        "off.wav",        false);
     ExtractResource(IDR_SOUND_MODERN_ON,  "modern_on.wav",  false);
     ExtractResource(IDR_SOUND_MODERN_OFF, "modern_off.wav", false);
     ExtractResource(IDR_SOUND_SMOOTH_ON,  "smooth_on.wav",  false);
     ExtractResource(IDR_SOUND_SMOOTH_OFF, "smooth_off.wav", false);
+    ExtractResource(IDR_SOUND_DING_ON,    "ding_on.wav",    false);
+    ExtractResource(IDR_SOUND_DING_OFF,   "ding_off.wav",   false);
 
     // Fonts: overwrite so users always get the current set bundled in the DLL.
     ExtractResource(IDR_FONT_ICONS,            "Icons.ttf",             true);

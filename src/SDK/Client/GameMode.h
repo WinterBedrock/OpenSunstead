@@ -1,14 +1,4 @@
 #pragma once
-// Shared GameMode resolution + virtual dispatch.
-// Vtable for 1.26.50.04 / 1.26.51.01 (decoded from the live vtable at
-// 0x14E826560):
-//   1 startDestroyBlock  2 destroyBlock  3 continueDestroyBlock  4 stopDestroyBlock
-//   7 buildBlock  10 getPickRange  12 useItem  15 attack(Actor*, Vec3 const*)
-// getPickRange moved 11 -> 10 this build; slot 11 is another pick-range-like
-// getter (NOT baseUseItem). mPlayer lives at +0x8 and must point back at the
-// local player. The engine's continueDestroyBlock keeps its own progress at
-// gm+0x24 and finishes the block itself (self-dispatch to vt[2]) past
-// 0.99999 — callers only keep the byte[lp+0xB22] attack flag set between calls.
 
 #include "../Types.h"
 #include "../Actor/Actor.h"
@@ -21,6 +11,7 @@
 
 // GameMode::getDestroyRate — published by SDKRuntime::Publish().
 extern uintptr_t g_GameMode_getDestroyRate;
+extern uintptr_t g_GameMode_buildBlock;
 
 namespace SDK {
 
@@ -42,87 +33,41 @@ constexpr int kBuildBlock      = ::Layout::VTable::GameMode_buildBlock;
 constexpr int kGetPickRange    = ::Layout::VTable::GameMode_getPickRange;
 constexpr int kUseItem         = ::Layout::VTable::GameMode_useItem;
 
-// Zeroed each call while a module wants the engine's build cooldown gone
-// (PlaceDelay): the gate in buildBlock compares
-// *(u64*)(gm + BuildCooldownLastNs) + delay_ns against now — writing 0 makes
-// the "last placement" timestamp the epoch, so the gate always passes.
 extern bool g_GameMode_SkipBuildCooldown;
 constexpr int kAttack          = ::Layout::VTable::GameMode_attack;
 constexpr uintptr_t kPlayerOff = ::Layout::GameMode::PlayerBackRef;
 
-// Validate a candidate GameMode pointer.
-// requirePlayerRef=true adds the (gm+0x8)==lp back-reference test (preferred).
 inline bool isValid(void* gm, Actor* lp, void*** vtOut, bool requirePlayerRef = true) {
-    if (!gm || !lp || !vtOut) return false;
-    void** vt = *(void***)gm;
-    if (!vt || !sdk_safe_ptr(vt, ::Layout::VTable::Guard(kAttack + 1))) return false;
-    void* pick   = vt[kGetPickRange];
-    void* attack = vt[kAttack];
-    if (!pick   || !sdk_safe_ptr(pick,   16)) return false;
-    if (!attack || !sdk_safe_ptr(attack, 16)) return false;
-    if (requirePlayerRef) {
-        void** mp = (void**)((uintptr_t)gm + kPlayerOff);
-        if (!sdk_safe_ptr(mp, sizeof(void*))) return false;
-        if (*mp != (void*)lp) return false;
-    }
-    *vtOut = vt;
+    if (vtOut) *vtOut = nullptr;
+    if (!gm || !lp || !vtOut || !sdk_safe_ptr(gm, kPlayerOff + sizeof(void*))) return false;
+    __try {
+        void** vt = *reinterpret_cast<void***>(gm);
+        if (!vt || !sdk_safe_ptr(vt, sizeof(void*))) return false;
+        if (requirePlayerRef && *reinterpret_cast<Actor**>(
+            reinterpret_cast<uintptr_t>(gm) + kPlayerOff) != lp) return false;
+        *vtOut = vt;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+inline std::atomic<void*>& activeGameMode() {
+    static std::atomic<void*> instance{ nullptr };
+    return instance;
+}
+
+inline bool remember(void* gm) {
+    if (activeGameMode().load(std::memory_order_acquire) == gm) return true;
+    auto* ci = ClientInstance::get();
+    Actor* lp = ci ? ci->getLocalPlayer() : nullptr;
+    void** vt = nullptr;
+    if (!isValid(gm, lp, &vt)) return false;
+    activeGameMode().store(gm, std::memory_order_release);
     return true;
 }
 
-// Resolve LocalPlayer's GameMode + its live vtable. Caches the validated field
-// offset so subsequent ticks are a single pointer chase. Returns nullptr on miss.
 inline void* resolve(Actor* lp, void*** vtOut) {
-    if (vtOut) *vtOut = nullptr;
-    if (!lp || !vtOut) return nullptr;
-
-    static uintptr_t s_gmOff = 0;
-
-    __try {
-        if (s_gmOff != 0) {
-            void** slot = (void**)((uintptr_t)lp + s_gmOff);
-            if (sdk_safe_ptr(slot, sizeof(void*))) {
-                void* gm = *slot;
-                if (gm && sdk_safe_ptr(gm, 0x10) && isValid(gm, lp, vtOut, true))
-                    return gm;
-            }
-            s_gmOff = 0;
-        }
-        const int gmField = Offsets().Actor_mGameMode;
-        if (gmField != 0) {
-            void** slot = (void**)((uintptr_t)lp + (uintptr_t)gmField);
-            if (sdk_safe_ptr(slot, sizeof(void*))) {
-                void* gm = *slot;
-                if (gm && sdk_safe_ptr(gm, 0x10) && isValid(gm, lp, vtOut, true)) {
-                    s_gmOff = (uintptr_t)gmField;
-                    return gm;
-                }
-            }
-        }
-        constexpr uintptr_t kScanBegin = ::Layout::GameMode::ScanBegin;
-        constexpr uintptr_t kScanEnd   = ::Layout::GameMode::ScanEnd;
-        for (uintptr_t off = kScanBegin; off <= kScanEnd; off += 8) {
-            void** slot = (void**)((uintptr_t)lp + off);
-            if (!sdk_safe_ptr(slot, sizeof(void*))) continue;
-            void* gm = *slot;
-            if (!gm || !sdk_safe_ptr(gm, 0x10)) continue;
-            if (isValid(gm, lp, vtOut, true)) {
-                s_gmOff = off;
-                return gm;
-            }
-        }
-        // Lenient last resort (vtable-only) if mPlayer layout ever drifts.
-        for (uintptr_t off = kScanBegin; off <= kScanEnd; off += 8) {
-            void** slot = (void**)((uintptr_t)lp + off);
-            if (!sdk_safe_ptr(slot, sizeof(void*))) continue;
-            void* gm = *slot;
-            if (!gm || !sdk_safe_ptr(gm, 0x10)) continue;
-            if (isValid(gm, lp, vtOut, false)) return gm;
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (vtOut) *vtOut = nullptr;
-        return nullptr;
-    }
-    return nullptr;
+    void* gm = activeGameMode().load(std::memory_order_acquire);
+    return isValid(gm, lp, vtOut) ? gm : nullptr;
 }
 
 // Mining pipeline
@@ -177,14 +122,6 @@ inline bool stopDestroy(void* gm, void** vt, const IVec3& pos) {
 
 // Vanilla break timing
 
-// GameMode::getDestroyRate(Block const&) — resolved by signature, not a vtable
-// slot (it is not virtual). Fraction of the block broken per GAME TICK with
-// the currently held item:
-//     rate = toolSpeed / blockHardness / (canHarvest ? 30 : 100)
-//            * 1.2^hasteLevel * 0.7^(miningFatigueLevel+1)
-// The game breaks the block once the accumulated progress reaches 0.99999.
-// A rate of 0 means "never breaks"; this helper also returns 0 on failure,
-// so callers must treat 0 as "cannot break".
 inline float getDestroyRate(void* gm, Block* block) {
     if (!gm || !block || !g_GameMode_getDestroyRate) return 0.f;
     if (!sdk_safe_ptr(gm, 0x10) || !sdk_safe_ptr(block, 0x10)) return 0.f;
@@ -225,12 +162,13 @@ inline bool useItemDirect(void* gm, void** vt, ItemStack* held) {
 }
 
 inline bool buildBlock(void* gm, void** vt, const IVec3& pos, unsigned char face) {
-    if (!gm || !vt) return false;
+    if (!gm) return false;
     if (g_GameMode_SkipBuildCooldown && sdk_safe_ptr(gm, ::Layout::GameMode::BuildCooldownLastNs + 8))
         *reinterpret_cast<std::uint64_t*>(reinterpret_cast<std::uintptr_t>(gm)
                                           + ::Layout::GameMode::BuildCooldownLastNs) = 0;
     __try {
-        void* fn = vt[kBuildBlock];
+        void* fn = reinterpret_cast<void*>(g_GameMode_buildBlock);
+        if (!fn && vt) fn = vt[kBuildBlock];
         if (!fn || !sdk_safe_ptr(fn, 16)) return false;
         using fn_t = void(__fastcall*)(void*, const IVec3*, unsigned char, bool, float);
         ((fn_t)fn)(gm, &pos, face, false, 1.0f);

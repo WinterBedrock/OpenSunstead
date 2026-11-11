@@ -37,9 +37,6 @@ inline float fxRandRange(float a, float b) { return a + (b - a) * fxRand01(); }
 
 } // namespace
 
-// The body of the module's own Effect struct is declared in the header (it is
-// used within the inline spawnFX template below) but the spawn logic itself
-// lives here so the .cpp helper has access to the private Effect fields.
 struct SuperHeroFXSpawnAccess {
     static SuperHeroFX::Effect make(float wx, float wy, float wz, float life,
                                     float rise, bool rainbow, int rainbowIdx, int word) {
@@ -105,10 +102,6 @@ void SuperHeroFX::OnRender() {
                     float d2 = dx * dx + dy * dy + dz * dz;
                     if (d2 > radius * radius) continue;
 
-                    // Hurt edge (rising edge only; one pulse per hit, no
-                    // re-trigger during invulnerability decay). The Actor+0x19C
-                    // read lives in chamsReadHurtTime below so OnRender stays C++
-                    // unwind-safe (C2712).
                     if (onDamage) {
                         int hurt = chamsReadHurtTime(a);
                         bool prevHurting = false;
@@ -118,9 +111,6 @@ void SuperHeroFX::OnRender() {
                         }
                         if (!recorded) mActorSeen.push_back({ (void*)a, now, hurt });
                         if (hurt > 0 && !prevHurting) {
-                            // Spawn within the actor's own AABB bounds (typical
-                            // player 0.6x1.8x0.6): x/z ±0.7, y 0..1.8. No
-                            // upward rise — text stays near the actor.
                             float cx = p.x + fxRandRange(-0.7f, 0.7f);
                             float cy = p.y + fxRandRange(0.0f, 1.8f);
                             float cz = p.z + fxRandRange(-0.7f, 0.7f);
@@ -175,10 +165,6 @@ void SuperHeroFX::OnRender() {
         e.age += dt;
         if (e.age >= e.life) { mFX.erase(mFX.begin() + i); continue; }
         const float t = e.age / e.life;
-        // No upward rise — the effect lives NEAR the actor's AABB (spawned
-        // within the pre-set randRange around the actor center + small
-        // constant on sway only). The slight sway on x/z keeps the effect
-        // from stacking when several fire at once.
         e.wx += std::sin(e.age * 3.0f + e.swayPhase) * 0.005f;
         e.wz += std::cos(e.age * 2.6f + e.swayPhase) * 0.005f;
         if (haveMV) {
@@ -193,9 +179,6 @@ void SuperHeroFX::OnRender() {
                 const std::string lbl(kWords_[e.word]);
                 const float fs = fontSize * scale * mScale;
                 ImVec2 centerAnchor(s.x, s.y - fs * 0.5f);
-                // Push the Bangers comic font for the FX labels (deployed by
-                // AssetDeployer). ImRenderUtils::drawText feeds off the CURRENT
-                // font, so we push before the call and reset after.
                 ImGui::PushFont(font, fs);
                 float w = ImRenderUtils::getTextWidth(&lbl, fs);
                 ImRenderUtils::drawText(ImVec2(centerAnchor.x - w * 0.5f, centerAnchor.y), lbl,

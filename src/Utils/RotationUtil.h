@@ -1,20 +1,5 @@
 #pragma once
 
-// RotationUtil — shared smoothed-aim helper for modules that need packet-only
-// rotations (Scaffold, Aura, OreMiner, ChestAura, Baritone).
-//
-// Centralises the math that was previously open-coded per-module so the
-// behaviour is identical between them and only parameterised by the caller:
-//   * smoothMode: linear (constant speed) vs easeOut (fast then decelerating)
-//   * maxAnglePerTick caps each pass' travel; rotationSpeed scales the budget
-//   * predictPlacementAngle biases the target look angle toward the predicted
-//     placement surface (for modules whose aim target is a block face)
-//   * optional per-step micro-jitter (+/- up to 2.5 deg, GDG-snapped) emulates
-//     the motor-muscle noise a real hand produces
-//
-// The helper is header-only (no new TU) to keep removal/addition of settings
-// in modules .h-only. It does not apply rotations itself — the module chooses
-// whether to publish via SilentRotation (packet-only) or via Camera (visible).
 #include "../../SDK/Math.h"
 #include <cmath>
 
@@ -33,9 +18,6 @@ struct Params {
     // EaseOut curve exponent (<1 = steep start, >1 = gentle start). Only read
     // when smoothMode == EaseOut.
     float easeExponent = 0.5f;
-    // Predict placement angle: when the module's aim is a block face the
-    // target pitch/yaw is biased toward the surface normal of that face so
-    // the head arrives steady on a face instead of the block centroid.
     bool predictPlacementAngle = false;
     // Micro-jitter magnitude (deg). ±2.5 is within the Bedrock sensitivity
     // quantisation and believable for a human hand. set to 0 to disable.
@@ -68,9 +50,6 @@ inline float stepOnce(float cur, float target, float budgetDeg, const Params& p,
 // Bias a raw aim target (eye->aim vector) for a placement surface
 // (predictPlacementAngle). For pure-aim modules this is a no-op pass-through.
 inline Vec3 adjustPlacementPredict(Vec3 eye, Vec3 aim, unsigned char face) {
-    // Bias: pull the aim in the direction of the face's surface normal so the
-    // look vector converges toward the FACE direction rather than the face
-    // centre. Keeps the head evenly placed when the block face is the surface.
     const float nx = (face == 4 ? -1.0f : face == 5 ? 1.0f : 0.0f);
     const float ny = (face == 0 ? -1.0f : face == 1 ? 1.0f : 0.0f);
     const float nz = (face == 2 ? -1.0f : face == 3 ? 1.0f : 0.0f);

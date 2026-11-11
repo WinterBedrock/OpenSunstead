@@ -35,22 +35,12 @@ class BlockLegacy {
 public:
     std::string getName() const {
         std::string out;
-        // 1.26.60.05 (IDA-derived): the FULL registered id ("minecraft:diamond_ore")
-        // lives in the HashedString mName @+0xE0 — FNV hash@+0xE0, string
-        // buf@+0xE8, size@+0xF8, cap@+0x100. Natives test air by comparing
-        // *(u64*)(legacy+0xE0) with the baked FNV("minecraft:air") constant
-        // 0xBD584BAF00003448, so this is the authoritative name field. The
-        // 1.26.30-era +0x90/+0x98 short-name pair is stale and reads garbage
-        // on this build.
         if (sdk_safe_string((void*)((uintptr_t)this + 0xE8), out) && !out.empty()) return out;
         return {};
     }
 
     uint16_t getBlockId() const {
         __try {
-            // 1.26.60.05 (IDA-derived): UNCHANGED from 1.26.30 — the base ctor
-            // sub_1435A7570 still stores the int16 id arg at *(WORD*)(this+0x17E).
-            // Name matching remains primary.
             if (!sdk_safe_ptr((void*)((uintptr_t)this + 0x17E), sizeof(uint16_t))) return 0xFFFF;
             uint16_t id = *(uint16_t*)((uintptr_t)this + 0x17E);
             if (id < 10000) return id;
@@ -66,11 +56,6 @@ public:
 
     bool isSolid() const {
         __try {
-            // 1.26.60.05 (IDA-derived): the old bool at +0x19C is DEAD (the
-            // ctor zeroes it). The natives' solid gate is exactly
-            // BlockSource_A vtable slot 53 (sub_1432D1C00):
-            //   (legacy[0x29] & 5) == 4   AND   (qword@+0x130 & 0x40000)
-            // — air fails the bit test.
             if (sdk_safe_ptr((void*)((uintptr_t)this + 0x130), sizeof(uint64_t)) &&
                 sdk_safe_ptr((void*)((uintptr_t)this + 0x29), 1)) {
                 if ((*(uint8_t*)((uintptr_t)this + 0x29) & 5) == 4 &&
@@ -82,9 +67,6 @@ public:
     }
 };
 
-// Copy a BlockLegacy's registered name into a caller-owned char buffer — POD
-// in/out so SEH-guarded callers avoid constructing a std::string in scope
-// (MSVC C2712).
 inline bool sehCopyBlockName(BlockLegacy* legacy, char* buf, size_t cap) {
     if (!legacy || !buf || cap == 0) return false;
     size_t len = 0;
@@ -96,8 +78,6 @@ inline bool sehCopyBlockName(BlockLegacy* legacy, char* buf, size_t cap) {
 class Block {
 public:
     BlockLegacy* getLegacy() const {
-        // 1.26.60.05 (IDA re-verified): Block::mLegacy at +0x68 (confirmed by
-        // the mesher 0x791B91D and sub_14D1ED640). Unchanged from 1.26.30.
         return readLegacyAt(0x68);
     }
 
@@ -112,8 +92,7 @@ public:
 private:
     BlockLegacy* readLegacyAt(uintptr_t off) const {
         BlockLegacy* legacy = readLegacyPtrAt(off);
-        // 0x120 covers BlockLegacy's mName HashedString (+0xE0) and its
-        // std::string (+0xE8..+0x108) on 1.26.60.05 (sizeof(BlockLegacy)=0x378).
+        // 0x120 covers BlockLegacy's mName HashedString (+0xE0) and its std::string (+0xE8..+0x108) on 26.60 (sizeof(BlockLegacy)=0x378)
         if (!legacy || !sdk_safe_ptr(legacy, 0x120)) return nullptr;
         return legacy->getName().empty() ? nullptr : legacy;
     }
@@ -140,9 +119,6 @@ public:
     Block* getBlock(const BlockPos& pos) {
         if (!isValid()) return nullptr;
         void** vt = *(void***)this;
-        // 1.26.60.05: vt[2] IS getBlock(this, BlockPos const&). Slot 3 is a
-        // position-keyed metadata map probe (not a Block) and 2-arg vt[1] is
-        // a layer-mangled forwarder.
         if (Block* b = callByRef(vt[2], pos)) return b;
         return nullptr;
     }
@@ -202,12 +178,7 @@ private:
 
 };
 
-// 1.26.60.05: the CI vtable slot 30 BlockSource getter is gone (slot 30 is
-// now getLocalPlayer). The long-lived client BlockSource lives on the
-// Dimension (dim+0xF0 shared holder, BS_A object at +0x20). See the ADT in
-// compatibility/blocksource-rakpeer2-1.26.60.json.
 } // namespace SDK
-// Defined in GameHooks.cpp (Dimension-rooted, see blocksource-rakpeer2 json).
 SDK::BlockSource* GameHooks_GetClientBlockSource();
 namespace SDK {
 inline BlockSource* ClientInstance::getBlockSource() {

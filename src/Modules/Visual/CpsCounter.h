@@ -5,7 +5,7 @@
 
 class CpsCounter : public Module {
 public:
-    CpsCounter() : Module("CPS Counter", "Displays your Clicks Per Second", Category::Visual, 0) {
+    CpsCounter() : Module("Cps Counter", "Displays your Clicks Per Second", Category::Visual, 0) {
         mIsHudModule = true;
         AddSetting(new EnumSetting("Style", "Color theme style", 0, {"Theme", "Custom"}));
         AddSetting(new ColorSetting("Text Color", "Color of the suffix text", 1.0f, 1.0f, 1.0f, 1.0f));
@@ -18,7 +18,7 @@ public:
         AddSetting(new BoolSetting("Gradient Numbers", "Draw the value in the theme gradient", true));
         AddSetting(new BoolSetting("Number Animation", "Animate the value when it changes", true));
     }
-    
+
     void OnRender() override;
 
 private:

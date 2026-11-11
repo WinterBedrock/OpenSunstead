@@ -8,9 +8,6 @@
 
 namespace {
 
-// SEH-guarded string write to a raw pointer.
-// Must be a plain POD function: __try can't live in a frame that owns C++
-// objects with destructors.  All params are POD / raw pointers.
 bool sehWriteStr(void* ptr, const char* data, size_t len) {
     if (!ptr || !data) return false;
     __try {
@@ -38,9 +35,6 @@ static bool readNameTag(void* player, std::string& out) {
     return sdk_safe_string((void*)((uintptr_t)player + kNameTagOffset), out);
 }
 
-// Reads a packet's REAL id from its own vtable (getId is vtable index 1),
-// instead of trusting the receive-hook's deduped handler->id map, which can
-// mislabel packets that share a dispatcher handler.  Same pattern as Velocity.
 static int readPacketId(SDK::Packet* packet) {
     if (!packet || !sdk_safe_ptr(packet, sizeof(void*))) return -1;
     void** vtable = *reinterpret_cast<void***>(packet);
@@ -53,30 +47,6 @@ static int readPacketId(SDK::Packet* packet) {
     }
 }
 
-// ---- SetScore (scoreboard) packet layout helpers ----------------------------
-//
-// MCBE SetScorePacket, layout REVERSED ON THE LIVE BUILD (1.26.50.04 IDB;
-// entry-copy code byte-identical on the live 1.26.51.01 exe — FakePlayer
-// entry copy sub_143B49020 RVA 0x3B49020 / 51.01 RVA 0x3B4A150). SetScore is
-// a cereal-only packet now; the old 1.26.30.05 offsets (action@+0x30,
-// entries@+0x38, stride 0x68) were stale: reading the vector at +0x38 sees
-// end/cap instead of begin/end, so a right-sized vector looked EMPTY.
-//   +0x30  std::vector<ScorePacketInfo>   entries  (begin/end/cap pointers;
-//          send-side ctor sub_14055F030, cereal read vfn sub_143A693D0)
-//
-// ScorePacketInfo — 0x60 / 96 bytes per entry (stride from vector copy
-// sub_143B48650 `+= 96`; per-type copy/destroy switch on the +0x58 byte;
-// dtor sub_14056A9C0 frees the +0x38 std::string only for type 3):
-//   +0x00  int64_t     scoreboardId   ("Id")
-//   +0x10  std::string objectiveName  ("Objective Name")
-//   +0x30  int32_t     score
-//   +0x38  std::string customName     (FakePlayer; Player/Entity keep the
-//                                      int64 actorUniqueId there instead)
-//   +0x58  uint8_t     identityType   (1=Player, 2=Entity, 3=FakePlayer)
-//
-// Only FakePlayer entries carry a printable name we can spoof; Player/Entity
-// entries resolve their name through the actor list, which the on-tick 0xBC0
-// write already covers. We only rewrite the +0x38 customName std::string.
 namespace scoreboard {
     constexpr uintptr_t kEntriesVecOff = 0x30;   // std::vector<ScorePacketInfo>
     constexpr size_t    kEntryStride   = 0x60;   // sizeof(ScorePacketInfo) = 96
@@ -118,13 +88,6 @@ namespace scoreboard {
     }
 }
 
-// Safely reads a candidate std::vector<std::string> at 'vecPtr', returning its
-// [begin,end) element pointers only if the layout is plausible:
-//   - begin/end non-null, end >= begin
-//   - byte span is a whole multiple of sizeof(std::string) (0x20)
-//   - element count is sane (<= 64) so garbage 3-pointer patterns are rejected
-// POD-only (no C++ objects) so __try is legal. Used to locate TextPacket::params
-// without hardcoding its offset.
 static bool readStrVec(void* vecPtr, void** beginOut, void** endOut) {
     if (!vecPtr || !beginOut || !endOut) return false;
     if (!sdk_safe_ptr(vecPtr, sizeof(void*) * 3)) return false;
@@ -148,9 +111,6 @@ static bool readStrVec(void* vecPtr, void** beginOut, void** endOut) {
 
 } // namespace
 
-// MCBE color codes.  \u00a7 in UTF-8 is 0xC2 0xA7 (2 bytes).
-// String concatenation ("\xC2\xA7" "f") prevents the \x escape from
-// consuming hex-digit color codes like f, 0, a, b, c, d, e.
 static const char* kColorCodes[] = {
     "\xC2\xA7" "f",  // 0  White
     "\xC2\xA7" "0",  // 1  Black
@@ -266,10 +226,6 @@ void NameProtect::OnTick() {
                 formattedNick.data(), formattedNick.size());
 }
 
-// Walks every ScorePacketInfo entry in a SetScore packet and, for FakePlayer
-// entries whose customName contains our real name, substitutes the nick. This
-// is what makes the spoofed name appear on server sidebars / below-name lines,
-// matching the FlarialSRC name-spoof behaviour.
 void NameProtect::ReplaceScoreboardNames(SDK::Packet* packet) {
     if (!packet) return;
 
@@ -319,45 +275,14 @@ void NameProtect::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cance
     // Chat replacement is gated behind the "Messages" toggle (setting [6]).
     if (!static_cast<BoolSetting*>(mSettings[6])->mValue) return;
 
-    // TextPacket layout (base Packet = 0x30 bytes, verified getId()==9 in
-    // Minecraft.Windows.exe 1.26.30.05):
-    //   +0x30  type            (uint8_t: 0=Raw, 1=Chat, 6=System, 7=Whisper...)
-    //   +0x38  author          (std::string)
-    //   +0x58  message         (std::string)
-    //   +0x78  filteredMessage (std::string)
-    //   +0xA0  params          (std::vector<std::string>)  <-- used by TRANSLATE
-    //                          messages (type 2), e.g. "chat.type.text" with
-    //                          params[0]=name, params[1]=message. Many servers
-    //                          route player chat through this path, which the
-    //                          old fixed-offset scan of only 0x38/0x58/0x78
-    //                          MISSED entirely -- that's why chat wasn't being
-    //                          rewritten while the scoreboard was.
-    //
-    // Rather than trust exact offsets (which drift), we do a robust two-part
-    // scan that finds the real name wherever the server put it:
-    //   (1) brute-scan the whole packet body as candidate std::string fields, and
-    //   (2) walk the params vector<string> and rewrite each element.
     std::string formattedNick = BuildFormattedNick();
     RewriteTextPacketNames(packet, formattedNick);
 }
 
-// Robustly rewrites the real name to the nick everywhere it appears inside a
-// TextPacket, without depending on exact field offsets. Two passes:
-//   (1) Scan the packet body [0x30, 0x120) on 8-byte boundaries; at each slot
-//       try to interpret the memory as a std::string (SEH + length-validated by
-//       sdk_safe_string). If it contains the real name, rewrite in place.
-//   (2) Scan the params std::vector<std::string> (each std::string is 0x20 on
-//       MSVC) and rewrite each element that contains the real name. This covers
-//       translate-type chat (chat.type.text / chat.type.announcement) where the
-//       name lives in params[0], not in the inline message string.
-// Everything is SEH-guarded so a malformed/hostile packet can never crash.
 void NameProtect::RewriteTextPacketNames(SDK::Packet* packet, const std::string& nick) {
     if (!packet) return;
     uintptr_t base = (uintptr_t)packet;
 
-    // ---- Pass 1: brute-scan inline std::string fields -----------------------
-    // Cover the whole plausible TextPacket body. 0x08 stride catches every
-    // 8-byte-aligned std::string start (author/message/filtered/xuid/platformId).
     for (uintptr_t off = 0x30; off < 0x120; off += 0x08) {
         std::string s;
         if (!sdk_safe_string((void*)(base + off), s) || s.empty()) continue;
@@ -366,10 +291,6 @@ void NameProtect::RewriteTextPacketNames(SDK::Packet* packet, const std::string&
         sehWriteStr((void*)(base + off), s.data(), s.size());
     }
 
-    // ---- Pass 2: params std::vector<std::string> ----------------------------
-    // Find the vector by brute-scanning the body for a [begin,end) pair whose
-    // element stride is sizeof(std::string)==0x20 and whose elements read as
-    // valid strings. This avoids hardcoding the params offset.
     for (uintptr_t off = 0x30; off < 0x120; off += 0x08) {
         void* begin = nullptr;
         void* end = nullptr;

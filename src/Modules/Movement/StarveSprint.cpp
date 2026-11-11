@@ -2,14 +2,6 @@
 #include "../../Memory/SigManager.h"
 #include <cstring>
 
-// testssss
-//   FF C1                         inc ecx
-//   F3 0F 10 05 ?? ?? ?? ??       movss xmm0, 6.0
-//   41 0F 2E 40 ??                ucomiss xmm0, [r8+disp]  ; food
-//   B8 01 00 00 00                mov eax, 1
-//   0F 43 C1                      cmovnbe eax, ecx         ; fail if food < 6
-//
-// Patch: NOP the 3-byte cmovnbe so eax stays 1 regardless of hunger.
 
 bool StarveSprint::writeBytes(uintptr_t addr, const void* data, size_t len) {
     if (!addr || !data || !len) return false;

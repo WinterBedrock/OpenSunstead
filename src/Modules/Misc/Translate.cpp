@@ -64,9 +64,6 @@ std::wstring urlEncode(const std::string& utf8) {
     return out;
 }
 
-// One HTTP round-trip with failure detail. A non-200 answer lands in
-// resp.status; a transport failure lands in resp.fail as "stage err=<winhttp>",
-// so the log can tell "Google 429" apart from "DNS dead" / "TLS reset".
 struct HttpResp {
     bool ok = false;
     unsigned long status = 0;   // HTTP status when the server answered at all
@@ -197,10 +194,6 @@ bool readJsonString(const std::string& json, size_t& i, std::string& val) {
     return true;
 }
 
-// Pulls a top-level string field out of a flat JSON reply: Mozhi uses
-// {"translated-text":"..."}, MyMemory nests {"responseData":{"translatedText":
-// "..."}} — the field name is unique in both replies, so the first hit is the
-// translation.
 bool extractJsonField(const std::string& json, const char* field, std::string& out) {
     const std::string key = std::string("\"") + field + "\"";
     const size_t k = json.find(key);
@@ -210,11 +203,6 @@ bool extractJsonField(const std::string& json, const char* field, std::string& o
     return readJsonString(json, i, out) && !out.empty();
 }
 
-// Reply shape:
-//   [[["translated","original",null,null,5], ...], null, "en", ...]
-// Only the FIRST string of each sentence triple is the translation. The rest
-// of that triple is the source text, and everything after the sentence list
-// (nulls, the detected language, a hash) must not be read as text.
 bool extractTranslation(const std::string& json, std::string& out) {
     const size_t root = json.find("[[[");
     if (root == std::string::npos) return false;
@@ -245,10 +233,6 @@ bool extractTranslation(const std::string& json, std::string& out) {
     return true;
 }
 
-// Some server/system lines arrive as rawtext JSON:
-//   {"rawtext":[{"text":"You have 0 friends online."}]}
-// Same decode as the Chat module's: concatenate every "text" member so the
-// translation (and the fallback line) shows the message, never the JSON.
 bool decodeRawTextJson(const std::string& in, std::string* out) {
     size_t p = in.find_first_not_of(" \t\r\n");
     if (p == std::string::npos || in[p] != '{') return false;
@@ -298,11 +282,6 @@ bool worthTranslating(const std::string& s) {
     return false;
 }
 
-// § formatting codes (C2 A7 + one ASCII code char) are decoration, not
-// language. Weak engines mangle them when sent as-is (MyMemory turned "§7"
-// into "§ 7" and ate glyphs), so stripping them off the request exists behind
-// the "Remove color codes" setting; with it off the codes are sent through so
-// the translation keeps its colours.
 std::string stripForRequest(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -445,9 +424,6 @@ void Translate::workerLoop() {
         bool parsed = false;
         const std::string plain = job.stripColors ? stripForRequest(job.body) : job.body;
         if (job.provider == 1) {
-            // Mozhi: server-side proxy in front of Google — the request comes
-            // from the instance, not the player's IP. Two instances, second is
-            // the fallback when the first is down.
             const std::wstring path =
                 std::wstring(L"/api/translate?engine=google&from=auto&to=") +
                 utf8ToWide(job.lang) + L"&text=" + urlEncode(plain);
@@ -511,11 +487,6 @@ void Translate::OnTick() {
         return nullptr;
     };
 
-    // Delay already cancelled the packet, so this call is the line's only
-    // chance to appear. ArmVanillaPassthrough makes the displayClientMessage
-    // hook keep the line in the Chat panel and still forward it into the
-    // real HUD chat. Without that forward, an enabled Chat module swallows
-    // the call and vanilla chat stays empty.
     auto show = [&](const std::string& line) -> bool {
         ::Chat::ArmVanillaPassthrough();
         if (!SDK::Chat::displayClientMessage(line)) {
@@ -523,9 +494,6 @@ void Translate::OnTick() {
             ::Chat::AddLine(line);
             return false;
         }
-        // The hook consumes the one-shot. If it is still armed, the call
-        // never entered the hook: vanilla already has the line, the panel
-        // does not.
         if (::Chat::DisarmVanillaPassthrough())
             ::Chat::AddLine(line);
         return true;
@@ -534,9 +502,6 @@ void Translate::OnTick() {
     for (const Result& r : ready) {
         Job* j = findWaiting(r.token);
         if (j && j->scoreboard) {
-            // Scoreboard job: cache the result. A HELD packet's rows resolve
-            // from the cache in the flush below; failed texts are remembered
-            // verbatim so a packet is never held forever.
             {
                 std::lock_guard<std::mutex> lock(mMutex);
                 mScoreInFlight.erase(j->body);
@@ -576,9 +541,6 @@ void Translate::OnTick() {
         dbg("show resend #" + std::to_string(r.token) + " \"" + clip(line) + "\"");
     }
 
-    // Held SetScore packets: once every row text has a translation (or a
-    // recorded failure), rewrite the held entries and re-deliver the packet
-    // through its original handler. Past the give-up, deliver as-is.
     {
         std::lock_guard<std::mutex> lock(mMutex);
         auto it = mPendingScores.begin();
@@ -597,9 +559,6 @@ void Translate::OnTick() {
         }
     }
 
-    // Delay lines that outlived the give-up window go out verbatim.
-    // Scoreboard jobs never print to chat — their give-up is the held-packet
-    // flush above (rows delivered verbatim), so a late timeout just drops them.
     {
         std::lock_guard<std::mutex> lock(mMutex);
         for (auto& j : waiting) {
@@ -616,11 +575,6 @@ void Translate::OnTick() {
 
 void Translate::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel) {
     if (!packet) return;
-    // The hook-side id comes from a handler->id table where duplicate
-    // handlers keep the FIRST id (several packet ids share one handler on
-    // this build), so SetScore can arrive under a different number or -1.
-    // The authoritative id is the packet's own getId() virtual (vtable[1])
-    // — the same read NameProtect trusts for its working scoreboard path.
     const int realId = readPacketIdTr(packet);
     const int id = (realId >= 0) ? realId : packetId;
 
@@ -631,9 +585,6 @@ void Translate::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel)
         OnSetScore(packet, cancel);
         return;
     }
-    // SetScoreboardIdentity (112): servers that register sidebar rows as fake
-    // identities (Hive-style). Static rows the hook never saw via SetScore
-    // travel HERE — same hold/translate/re-deliver pipeline as SetScore.
     if (id == 112) {
         dbg("packet id=" + std::to_string(id) + " (hook " + std::to_string(packetId) +
             ") SetScoreboardIdentity received");
@@ -673,9 +624,6 @@ void Translate::OnPacketReceive(SDK::Packet* packet, int packetId, bool& cancel)
             body = readPktString(pkt, SDK::kTextPktStr);
         }
     }
-    // rawtext JSON ({"rawtext":[{"text":"..."}]}) arrives undecoded on some
-    // servers — decode it like the Chat module so the translation is of the
-    // message, and a failed translation never shows the JSON itself.
     {
         std::string decoded;
         if (decodeRawTextJson(body, &decoded)) body = decoded;
@@ -762,10 +710,6 @@ bool sehWriteStrTr(void* ptr, const char* data, size_t len) {
     }
 }
 
-// POD-only reads of the entries vector [begin,end). Empty (both null) is a
-// legal state — the caller distinguishes it from a corrupt/unreadable one.
-// The span must be a whole multiple of the 0x60 stride: a partial multiple
-// means the layout drifted again (log the verdict, read nothing).
 bool sehScoreVec(void* pkt, uintptr_t* beginOut, uintptr_t* endOut) {
     if (!pkt || !beginOut || !endOut) return false;
     __try {
@@ -785,17 +729,6 @@ bool sehReadByteTr(uintptr_t addr, uint8_t* out) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// ---- SetScoreboardIdentity (id 112) layout --------------------------------
-// Verified on the 1.26.50.04 IDB (cereal loader/read vfn wiring):
-//   +0x30  uint8_t action                    (ScoreboardIdentityPacketType)
-//   +0x38  std::vector<Entry> entries        (begin/end/cap; stride 0x20 —
-//          copy helper sub_143B64BF0 raw-copies qword+0,qword+8,oword+0x10)
-// Entry (0x20 bytes, no owning std::string — fake names are string_views
-// into the cereal read arena; copy the CONTENT at hook time):
-//   +0x00  int64_t  scoreboardId
-//   +0x08  const char* name ptr              (FakePlayer view)
-//   +0x10  size_t     name len
-//   +0x18  uint8_t    identityType           (3 = FakePlayer)
 constexpr uintptr_t kIdiActionOff  = 0x30;
 constexpr uintptr_t kIdiVecOff     = 0x38;
 constexpr size_t    kIdiEntryStride = 0x20;
@@ -842,16 +775,6 @@ bool sehWriteViewEntry(void* namePtrAddr, const char* data, uintptr_t lenAddr, s
 
 } // namespace
 
-// Scoreboard delivery design (the freeze fix):
-//   The old code translated misses INLINE on the receive thread — a slow
-//   provider froze every incoming packet for up to the HTTP timeout per new
-//   line. Now the hook never does HTTP. Instead a SetScore packet whose
-//   FakePlayer rows are not all cached is HELD (cancelled + owned by
-//   GameHooks), its rows are enqueued to the async worker, and OnTick
-//   re-delivers the packet through the original handler once the
-//   translations land (or verbatim after kScoreGiveUpMs). The client
-//   scoreboard model therefore only ever receives translated rows, including
-//   static rows the server never re-sends after join.
 void Translate::OnSetScore(SDK::Packet* packet, bool& cancel) {
     if (!packet) return;
     if (mSettings.empty() || !static_cast<BoolSetting*>(mSettings[5])->mValue) return;
@@ -880,9 +803,6 @@ void Translate::OnSetScore(SDK::Packet* packet, bool& cancel) {
         uint8_t type = 0;
         if (!sehReadByteTr(entry + kScoreIdentityType, &type)) continue;
 
-        // Player/Entity (1/2) entries resolve their name through the actor
-        // list, which NameProtect's nametag substitution already covers —
-        // only FakePlayer rows carry a translatable literal here.
         void* namePtr = (type == kScoreIdFakePlayer)
             ? (void*)(entry + kScoreCustomName) : nullptr;
 
@@ -932,9 +852,6 @@ void Translate::OnSetScore(SDK::Packet* packet, bool& cancel) {
     }
     if (!missing || pending.rows.empty()) return;
 
-    // Hold the packet and deliver it once translations are in — but only if
-    // the hook can actually own the reference; otherwise pass it through with
-    // the untranslated rows (never lose a scoreboard update).
     if (!GameHooks::HoldIncomingPacket(packet)) {
         dbg("setscore: hold failed, passing untranslated");
         return;   // jobs stay queued; their translations land in the cache
@@ -955,11 +872,6 @@ void Translate::OnSetScore(SDK::Packet* packet, bool& cancel) {
     cancel = true;
 }
 
-// SetScoreboardIdentity (112) — servers that register sidebar fake names
-// through the identity table instead of carrying them inside SetScore. The
-// flow is identical to OnSetScore, but the name field is a string_view whose
-// content lives in the cereal read-arena, so the text is COPIED at hook
-// time; the rewrite later points the view at a pooled translated string.
 void Translate::OnSetScoreboardIdentity(SDK::Packet* packet, bool& cancel) {
     if (!packet) return;
     if (mSettings.empty() || !static_cast<BoolSetting*>(mSettings[5])->mValue) return;

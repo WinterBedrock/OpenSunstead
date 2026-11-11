@@ -22,10 +22,6 @@ struct ExecutionOptions {
     bool faceTravel = true;
 };
 
-// Follows a movement-typed path by driving Bedrock's own MoveInputComponent:
-// analog stick plus coherent direction bits in both input states. Never
-// writes velocity or calls jumpFromGround — the client's movement systems
-// stay authoritative, which keeps BDS movement checks happy.
 class PathExecutor {
 public:
     void begin(std::vector<PathNode> newPath);

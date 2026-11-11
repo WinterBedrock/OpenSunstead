@@ -7,10 +7,6 @@
 #include "../../Core/Logger.h"
 #include <Windows.h>
 
-// The flag lives in SDKRuntime.cpp next to the other published g_* globals.
-// It is read by SDK::GameMode::buildBlock AND by the GameMode::buildBlock /
-// continueDestroyBlock MinHooks (vanilla hold-to-place) — all of them zero the
-// engine's placement stamps around the call while it is set.
 extern bool SDK::GameMode::g_GameMode_SkipBuildCooldown;
 
 // GameMode::mPlayer back-reference (gm+0x8) is the cheap "this is really a
@@ -30,9 +26,6 @@ static bool sehForceFastRepeat(void* gm) {
         const uintptr_t base = reinterpret_cast<uintptr_t>(gm);
         *reinterpret_cast<std::uint64_t*>(base + ::Layout::GameMode::BuildCooldownLastNs) = 0;
         *reinterpret_cast<std::uint64_t*>(base + ::Layout::GameMode::UseRepeatNextNs) = 0;
-        // The engine's own hold-repeat gap: 250 ms by ctor default (reversed
-        // from sub_142598DB0). 1 ms makes the engine's repeats run at tick
-        // rate; the vanilla 250 is remembered so disable restores it.
         std::uint64_t& interval = *reinterpret_cast<std::uint64_t*>(base + ::Layout::GameMode::UseRepeatIntervalMs);
         if (interval > 1ull) interval = 1ull;
         return true;
@@ -106,11 +99,6 @@ void PlaceDelay::OnTick() {
     // 1) Hold the engine's own gates open (stamps at epoch, interval at 1ms).
     sehForceFastRepeat(gm);
 
-    // 2) Drive placement ourselves: inject a full game-native right-click at
-    //    the module's rate. Each one runs the complete vanilla use path —
-    //    the same transaction, prediction and packets a physical click
-    //    produces — so the block lands exactly as vanilla, just without the
-    //    engine pacing between them.
     float delayMs = GetClickDelayMs();
     if (delayMs < 0.0f) delayMs = 0.0f;
     const unsigned long long now = GetTickCount64();

@@ -80,9 +80,6 @@ bool sehApplyFovMod(float total) {
         float y = *fy;
         if (!std::isfinite(x) || !std::isfinite(y)) return false;
 
-        // Did OUR last write survive untouched? Bit-exact compare: the value
-        // we stored is still there only if nothing (render-prep, another
-        // module) rewrote the slot since.
         const bool untouched = s_haveWritten && x == s_lastWroteX && y == s_lastWroteY;
         if (untouched && s_appliedTotal != 1.0f) {
             x /= s_appliedTotal;

@@ -1,7 +1,4 @@
 #pragma once
-// Sunstead SDK — shared block classification + projection for block overlays
-// (BlockESP/Xray). Needs the World types and worldToScreen — include after
-// World.h / Math.h.
 #include "World.h"
 #include "../Math.h"
 #include <imgui.h>
@@ -11,8 +8,6 @@
 
 namespace SDK::BlockScan {
 
-// Valuable-block kinds. Values are stable (persisted configs index settings by
-// position, kinds feed those toggles).
 enum Kind {
     Kind_None = 0,
     Kind_Diamond,
@@ -40,8 +35,6 @@ inline bool contains(const std::string& s, const char* needle) {
     return s.find(needle) != std::string::npos;
 }
 
-// Name-first classification with the block-id table as the fallback: names
-// survive data-driven renumbering, ids catch renamed legacy blocks.
 inline int classify(BlockLegacy* legacy) {
     if (!legacy) return Kind_None;
     std::string n = lowerCopy(legacy->getName());
@@ -55,8 +48,6 @@ inline int classify(BlockLegacy* legacy) {
         if (contains(n, "coal_ore")) return Kind_Coal;
         if (contains(n, "redstone_ore") || contains(n, "lit_redstone_ore")) return Kind_Redstone;
         if (contains(n, "lapis_ore")) return Kind_Lapis;
-        // Ancient debris — match the bare word too so neither namespace
-        // prefixes nor future renames break the check.
         if (contains(n, "ancient_debris") || contains(n, "debris")) return Kind_Debris;
         if (contains(n, "portal")) return Kind_Portal;
         if (contains(n, "shulker_box")) return Kind_Shulker;   // base + 16 dyes
@@ -100,8 +91,6 @@ inline ImColor colorFor(int kind) {
     }
 }
 
-// Project one block's 8 corners with the shared MVP. Returns the number of
-// corners in front of the camera; fills out/valid.
 inline int projectBlockBox(const BlockPos& p, const float* mvp, const Vec3& origin,
                            const ImVec2& screen, ImVec2 out[8], bool valid[8]) {
     Vec3 mn((float)p.x, (float)p.y, (float)p.z);
@@ -118,8 +107,6 @@ inline int projectBlockBox(const BlockPos& p, const float* mvp, const Vec3& orig
     return n;
 }
 
-// True when any of the six neighbours is air (the "visible from a cave"
-// filter used by Xray/BlockESP's Only Exposed option).
 inline bool exposedToAir(BlockSource* src, const BlockPos& p) {
     static const BlockPos offsets[6] = {
         {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0},

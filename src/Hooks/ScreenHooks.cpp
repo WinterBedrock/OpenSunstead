@@ -1,12 +1,9 @@
-// ScreenView::setupAndRender detour — screen-change publishing, the custom
-// main-menu layout, vanilla chat-panel hiding and per-frame UI dispatch.
-// a2 = MinecraftUIRenderContext* (confirmed in IDA ScreenView_setupAndRender).
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
 #include "../SDK/Client/GameIcon.h"
 #include "../Memory/OffsetManager.h"
-#include "../Memory/OffsetValidator.h"
+
 #include "../Modules/ModuleManager.h"
 #include "../Modules/Visual/Chat.h"
 #include "../Modules/Visual/HotbarAnimation.h"
@@ -14,7 +11,7 @@
 #include "../Modules/Player/InventoryManager.h"
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <cmath>
 #include <string>
 
@@ -24,10 +21,6 @@ namespace {
     // Screen change tracking.
     std::string g_CurrentScreenName;
 
-    // ---- start_screen main-menu layout -------------------------------------
-    // stacked_rows children: play relY=0, settings=32, realms=64, store=96.
-    // Move play+settings down; hide the realms/store rows so they don't leave
-    // shadows on the moved buttons. Positive Y = lower.
     static constexpr float kMainMenuRowYOffset = 12.0f;
     static constexpr float kStackedRowsAbsX = 245.0f;
     static constexpr float kStackedRowsAbsY = 154.0f;
@@ -152,10 +145,6 @@ namespace {
     ScreenView_setupAndRender_t oScreenViewSetupAndRender = nullptr;
 
     void __fastcall hkScreenViewSetupAndRender(SDK::ScreenView* view, void* mcuirc) {
-        // One-shot offset probe: Present-time validation cannot reach the UI
-        // graph, so this is the only place a live ScreenView is in hand.
-        // Retries per frame until the report is final.
-        OffsetValidator::GetInstance().ValidateScreenView(view);
 
         std::string name = view->getScreenName();
         SDK::ScreenController* ctrl = view ? view->getScreenController() : nullptr;
@@ -174,9 +163,6 @@ namespace {
                 SDK::ScreenEvents::get().fire(name);
             }
 
-            // Hide the vanilla chat panel while the custom Chat module owns chat.
-            // Re-applied every frame (the game can re-lay the panel anytime);
-            // the restore also runs for one extra frame on the toggle edge.
             if (name == "hud_screen") {
                 static bool s_vanillaChatHidden = false;
                 Module* chatMod = ModuleManager::GetInstance().GetModuleByName("Chat");
@@ -218,9 +204,6 @@ namespace {
         if (hooksReady && onStart)
             processStartScreen(view); // re-apply after the layout rebuild
 
-        // ChestStealer primary path: UI thread + live controller. InventoryManager
-        // uses the same dispatch. GameIcon::onUiRender harvests the game's own
-        // item icons (the Present hook copies them into ImGui textures).
         if (hooksReady) {
             Module* cs = ModuleManager::GetInstance().GetModuleByName("ChestStealer");
             if (cs && cs->IsEnabled())
@@ -231,6 +214,7 @@ namespace {
                 static_cast<InventoryManager*>(im)->OnContainerFrame(ctrl, name);
 
             SDK::GameIcon::onUiRender(mcuirc, name);
+
         }
     }
 
@@ -252,9 +236,8 @@ void InstallScreenHooks() {
     // Splash BEFORE ScreenView so the first frame already runs through it.
     uintptr_t convertAddr = SigManager::GetInstance().SplashText_convert;
     if (convertAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(convertAddr), &hkSplashText_convert,
-                          reinterpret_cast<LPVOID*>(&oSplashText_convert)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(convertAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(convertAddr), &hkSplashText_convert,
+                          reinterpret_cast<LPVOID*>(&oSplashText_convert))) {
             LOG_INFO("SplashText_convert hooked", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook SplashText_convert", "GameHooks");
@@ -267,9 +250,8 @@ void InstallScreenHooks() {
     // installer and crashed.
     uintptr_t screenViewAddr = SigManager::GetInstance().ScreenView_setupAndRender;
     if (screenViewAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(screenViewAddr), &hkScreenViewSetupAndRender,
-                reinterpret_cast<LPVOID*>(&oScreenViewSetupAndRender)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(screenViewAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(screenViewAddr), &hkScreenViewSetupAndRender,
+                reinterpret_cast<LPVOID*>(&oScreenViewSetupAndRender))) {
             LOG_INFO("screen-render hook installed (last)", "GameHooks");
         } else {
             LOG_ERROR("FAILED to hook screen-render", "GameHooks");

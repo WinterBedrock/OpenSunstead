@@ -1,6 +1,3 @@
-// Option/world-level visual hooks: Options::getGamma (Fullbright),
-// Options::getPerspective + _updatePlayer (Freelook, module OnUpdate
-// dispatch), Dimension::getTimeOfDay / getSkyColor (TimeChanger / FogColor).
 #include "GameHooks.h"
 #include "HookShared.h"
 #include "../SDK/SDK.h"
@@ -13,7 +10,7 @@
 #include "../Utils/MiscUtils/ColorUtils.hpp"
 #include "../Core/Logger.h"
 #include "../Memory/SigManager.h"
-#include "MinHook.h"
+#include "HookEngine.h"
 #include <atomic>
 #include <imgui.h>
 
@@ -43,9 +40,6 @@ namespace {
     static void* s_perspectiveOptions = nullptr;
 
     static int __fastcall hkGetPerspective(void* options) {
-        // Remember the Options object: FreeCam's ghost injection reads the
-        // perspective through the REAL getter so a stale mirror can never
-        // gate it.
         s_perspectiveOptions = options;
         Module* fl = ModuleManager::GetInstance().GetModuleByName("Freelook");
         if (fl && static_cast<Freelook*>(fl)->IsActive()) {
@@ -134,9 +128,8 @@ int GameHooks::LivePerspectiveForGhost() {
 void InstallGammaHook() {
     uintptr_t gammaAddr = SigManager::GetInstance().Fullbright;
     if (gammaAddr) {
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(gammaAddr), &hkOptionsGetGamma,
-                           reinterpret_cast<LPVOID*>(&oOptionsGetGamma)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(gammaAddr));
+        if (HookEngine::Create(reinterpret_cast<LPVOID>(gammaAddr), &hkOptionsGetGamma,
+                           reinterpret_cast<LPVOID*>(&oOptionsGetGamma))) {
             LOG_INFO("Options::getGamma hooked", "GameHooks");
         }
     }
@@ -144,15 +137,13 @@ void InstallGammaHook() {
 
 void InstallFreelookHooks() {
     uintptr_t pAddr = SigManager::GetInstance().Options_getPerspective;
-    if (pAddr && MH_CreateHook(reinterpret_cast<LPVOID>(pAddr), &hkGetPerspective,
-                               reinterpret_cast<LPVOID*>(&oGetPerspective)) == MH_OK) {
-        gh::HookEnable(reinterpret_cast<LPVOID>(pAddr));
+    if (pAddr && HookEngine::Create(reinterpret_cast<LPVOID>(pAddr), &hkGetPerspective,
+                               reinterpret_cast<LPVOID*>(&oGetPerspective))) {
         LOG_INFO("Options::getPerspective hooked", "GameHooks");
     }
     uintptr_t uAddr = SigManager::GetInstance()._updatePlayer;
-    if (uAddr && MH_CreateHook(reinterpret_cast<LPVOID>(uAddr), &hkUpdatePlayer,
-                               reinterpret_cast<LPVOID*>(&oUpdatePlayer)) == MH_OK) {
-        gh::HookEnable(reinterpret_cast<LPVOID>(uAddr));
+    if (uAddr && HookEngine::Create(reinterpret_cast<LPVOID>(uAddr), &hkUpdatePlayer,
+                               reinterpret_cast<LPVOID*>(&oUpdatePlayer))) {
         LOG_INFO("_updatePlayer hooked", "GameHooks");
     }
 }
@@ -160,17 +151,15 @@ void InstallFreelookHooks() {
 void InstallWorldOverrideHooks() {
     {
         uintptr_t tAddr = SigManager::GetInstance().Dimension_getTimeOfDay;
-        if (tAddr && MH_CreateHook(reinterpret_cast<LPVOID>(tAddr), &hkGetTimeOfDay,
-                                   reinterpret_cast<LPVOID*>(&oGetTimeOfDay)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(tAddr));
+        if (tAddr && HookEngine::Create(reinterpret_cast<LPVOID>(tAddr), &hkGetTimeOfDay,
+                                   reinterpret_cast<LPVOID*>(&oGetTimeOfDay))) {
             LOG_INFO("Dimension::getTimeOfDay hooked", "GameHooks");
         }
     }
     {
         uintptr_t fAddr = SigManager::GetInstance().Dimension_getSkyColor;
-        if (fAddr && MH_CreateHook(reinterpret_cast<LPVOID>(fAddr), &hkGetSkyColor,
-                                   reinterpret_cast<LPVOID*>(&oGetSkyColor)) == MH_OK) {
-            gh::HookEnable(reinterpret_cast<LPVOID>(fAddr));
+        if (fAddr && HookEngine::Create(reinterpret_cast<LPVOID>(fAddr), &hkGetSkyColor,
+                                   reinterpret_cast<LPVOID*>(&oGetSkyColor))) {
             LOG_INFO("Dimension::getSkyColor hooked", "GameHooks");
         }
     }

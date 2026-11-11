@@ -3,10 +3,6 @@
 #include <string>
 #include <unordered_set>
 
-// PlayerAlarm — watches the runtime actor list and announces when a player
-// enters (green "[+]") or leaves (red "[-]") your render range, via chat and/or
-// a client notification. On enable it silently primes the current roster so you
-// aren't flooded with a join line for every player already loaded.
 namespace SDK { class GuiData; class Actor; class Level; class ClientInstance; }
 
 class PlayerAlarm : public Module {

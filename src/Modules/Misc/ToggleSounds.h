@@ -4,9 +4,8 @@
 class ToggleSounds : public Module {
 public:
     ToggleSounds() : Module("ToggleSounds", "Plays a sound when modules are toggled", Category::Misc, 0) {
-        // Sound pack selection. Asset .wav files for each pack are bundled in
-        // the DLL (RCDATA) and deployed to %APPDATA%/Sunstead/assets on inject.
-        AddSetting(new EnumSetting("Type", "Toggle sound pack", 0, { "Default", "Modern", "Smooth" }));
+        AddSetting(new EnumSetting("Type", "Toggle sound pack", 3,
+                                  std::vector<std::string>{ "Click", "Modern", "Smooth", "Ding" }));
         sInstance = this;
     }
 

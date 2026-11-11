@@ -14,7 +14,6 @@ void MotionBlur::OnDisable() {
 void MotionBlur::OnRender() {
     if (!IsEnabled()) return;
 
-    // Skip pure menus; allow hud + pause-ish overlays where world is still visible.
     const std::string& sn = SDK::ScreenView::currentScreenName();
     if (sn == "start_screen" || sn == "play_screen" || sn == "settings_screen")
         return;

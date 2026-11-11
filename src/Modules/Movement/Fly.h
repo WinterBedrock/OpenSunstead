@@ -4,20 +4,6 @@
 
 namespace SDK { class Actor; class Packet; }
 
-// Fly — flight modes, creative baseline plus Apollo-style bypasses:
-//   Creative — vanilla creative rebuild (zero + WASD/space/shift + glide).
-//   Flareon  — timer-stretched hop sustain (Apollo Flareon, minus its packet
-//              desync): sprint, 100 ms hop cadence, 0.9x air sustain.
-//   Glide    — timer + pinned vertical ("silly"): fixed Y velocity while the
-//              timer stretches ticks.
-//   Funny    — hover with server-pinned Y (Apollo "funny"): vel.y = 0, gentle
-//              0.307 air speed, and the outgoing PAI reports the take-off Y so
-//              the server never sees the hover (pair with NoFall for landing).
-//   AirWalk  — Apollo case 5: force the on-ground flag (shared AirJump
-//              machinery) + creative-style glide, so movement integrates as a
-//              ground walk while airborne.
-// Fly Blink (any mode): swallow outgoing movement packets, freezing the
-// server-side position while the client flies freely.
 class Fly : public Module {
 public:
     Fly() : Module("Fly", "Fly like in creative mode", Category::Movement, 0) {

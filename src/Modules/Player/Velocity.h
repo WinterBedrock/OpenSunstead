@@ -1,21 +1,9 @@
 #pragma once
 #include "../Module.h"
 
-// Velocity — modifies the knockback the server applies to you.
-//   * Cancel: the SetEntityMotion packet is cancelled outright (no knockback).
-//   * Percent (default): the motion vector is scaled by the H/V multipliers.
-//   * Delay: the packet is HELD — the motion is applied locally only after
-//     the configured delay, so the hit registers but the shove arrives late
-//     (useful to desync anti-cheat combos / wait out a combo). An optional
-//     HUD readout shows the queued knockback and the milliseconds left; its
-//     whole look (scale, blur, dim, rounding, bar height, glow, 3D shading)
-//     is configurable, TargetHUD-style, and only shows in Delay mode.
 class Velocity : public Module {
 public:
     Velocity() : Module("Velocity", "Modifies your velocity from attacks, explosions, etc.", Category::Player, 0) {
-        // Mode indexes are load-bearing for old configs (they are saved by
-        // index): 0 was "Full" and is now "Cancel" (same cancel-the-packet
-        // behaviour, clearer name), 2 stays Delay. Default flips to Percent.
         AddSetting(new EnumSetting("Mode", "The mode of velocity", 1, { "Cancel", "Percent", "Delay" }));            // [0]
         AddSetting(new NumberSetting("Horizontal", "Horizontal velocity multiplier", 0.0f, -2.0f, 2.0f, 0.01f));   // [1]
         AddSetting(new NumberSetting("Vertical", "Vertical velocity multiplier", 0.0f, -2.0f, 2.0f, 0.01f));       // [2]
@@ -37,10 +25,6 @@ public:
         UpdateSettingsVisibility();
     }
 
-    // Mode-conditional rows: Horizontal/Vertical only make sense in Percent,
-    // the Delay knobs only in Delay, and the look knobs only while the visual
-    // itself is on. The trailing "Visible" (ArrayList) toggle injected by
-    // ModuleManager is never touched here.
     void UpdateSettingsVisibility() override {
         const int  mode   = static_cast<EnumSetting*>(mSettings[0])->mValue;
         const bool percent = (mode == 1);

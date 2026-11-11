@@ -1,6 +1,10 @@
 #pragma once
 
 #include "../Module.h"
+#include "../../SDK/Types.h"
+#include <unordered_map>
+
+namespace SDK { class Actor; class Level; }
 
 class HitBoxes : public Module {
 public:
@@ -9,12 +13,11 @@ public:
     void OnTick() override;
     void OnDisable() override;
 
+private:
+    int GetTargetMode() const { return static_cast<EnumSetting*>(mSettings[0])->mValue; }
+
     NumberSetting* widthSetting = nullptr;
     NumberSetting* heightSetting = nullptr;
-
-private:
-    // Target filter dropdown. 0 = all entities (mobs, items, everything the
-    // level lists), 1 = players only, 2 = players filtered through the
-    // AntiBot module (bots excluded).
-    int GetTargetMode() const { return static_cast<EnumSetting*>(mSettings[0])->mValue; }
+    SDK::Level* trackedLevel = nullptr;
+    std::unordered_map<SDK::Actor*, AABBShapeComponent> originalBoxes;
 };
